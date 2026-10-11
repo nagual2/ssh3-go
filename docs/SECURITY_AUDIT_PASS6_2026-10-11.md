@@ -185,8 +185,10 @@ Go 1.26.0 linux/amd64, recovered per the team skill; `GOFLAGS=-mod=vendor`, `GOC
 | `go test ./util/ -run '^$' -fuzz FuzzParseSSHString -fuzztime 30s` | **PASS** — 30.0 s, **1,462,752 execs** (~48k/s, 2 workers), 7 baseline seeds, 9 new interesting inputs, **no crash and no new failing corpus entry**. This is the pass-5 leftover "fuzz smoke". |
 | `go test -race ./util/... ./message/...` | **PASS** — `util` 1.2 s, `util/ttymodes` 1.0 s, `util/unix_util` (no test files), `message` 2.3 s |
 | `go test -race -count=1 .` (root package) | **PASS** — 1.1 s |
-| `go test -race -count=1 ./cmd/...` | **started, not finished** when this report was written; it was the last step of the detached probe script and nothing in it had failed at the point of writing |
-| `go vet ./...` | queued behind the above in the same script; not reported |
+| `go test -race -count=1 ./cmd/...` | **PASS** — `cmd` 4.3 s; `cmd/plugin_endpoint`, `cmd/ssh3`, `cmd/ssh3-server` have no test files |
+| `go vet ./...` | **ran, 4 diagnostics, none new and none in the datagram path**: `util/unix_util/linux_user.go:50,153` "possible misuse of unsafe.Pointer", and `integration_tests/ssh3_test.go:526,646` `"%s:%d"` address formats that break IPv6 (passed to `net.Dial` at `:531`/`:651`). The IPv6 ones are worth a follow-up: they are in the integration tests, so they can mask a real IPv6 regression rather than expose one |
+
+Total probe wall time for fuzz + all four `-race` suites + vet: under 3 minutes on this box; the whole set is cheap enough to put in CI.
 
 **Fix-path probe:** no new runtime probe of the F-14 path was written — the pass-5 follow-up commit already ships `conversation_test.go` (+57 lines) and `resources_manager_test.go` (+50 lines) that pin the closed-channel and eviction conditions, and the root package plus `util`/`message` suites above run green under `-race`. The F-14 analysis in §2 is a code-path analysis of every branch out of the loop, not a runtime reproduction; a probe that actually delivers a datagram for a just-pruned channel was **not** executed. No live attacks of any kind were performed.
 
