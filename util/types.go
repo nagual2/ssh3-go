@@ -41,6 +41,21 @@ func (e ChannelNotFound) Error() string {
 	return fmt.Sprintf("Channel not found: %d", e.ChannelID)
 }
 
+// DatagramMalformed classifies a datagram that could not be parsed (F-19): it
+// is per-datagram garbage, so a receive loop may drop it with a warning and
+// carry on instead of ending the conversation's datagram reception.
+type DatagramMalformed struct {
+	Err error
+}
+
+func (e DatagramMalformed) Error() string {
+	return fmt.Sprintf("Malformed datagram: %v", e.Err)
+}
+
+func (e DatagramMalformed) Unwrap() error {
+	return e.Err
+}
+
 type InvalidSSHString struct {
 	Reason error
 }
