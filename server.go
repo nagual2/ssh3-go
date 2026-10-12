@@ -308,8 +308,10 @@ func (s *Server) GetHTTPHandlerFunc(ctx context.Context) AuthenticatedHandlerFun
 					buf := &util.BytesReadCloser{Reader: bytes.NewReader(dgram)}
 					convID, err := util.ReadVarInt(buf)
 					if err != nil {
-						log.Error().Msgf("could not read conv id from datagram on conv %d: %s", newConv.controlStream.StreamID(), err)
-						return
+						// F-19: one malformed datagram must not end the
+						// conversation's datagram reception; drop it and carry on
+						log.Warn().Msgf("dropping malformed datagram on conversation %d: %s", newConv.controlStream.StreamID(), err)
+						continue
 					}
 					if convID == uint64(newConv.controlStream.StreamID()) {
 						err = newConv.AddDatagram(ctx, dgram[buf.Size()-int64(buf.Len()):])
@@ -317,6 +319,11 @@ func (s *Server) GetHTTPHandlerFunc(ctx context.Context) AuthenticatedHandlerFun
 							switch e := err.(type) {
 							case util.ChannelNotFound:
 								log.Warn().Msgf("could not find channel %d, queue datagram in the meantime", e.ChannelID)
+							case util.DatagramMalformed:
+								// F-19: garbage payload — drop the datagram, keep
+								// the loop alive (mirror of the client loop)
+								log.Warn().Msgf("dropping malformed datagram on conversation %d: %s",
+									newConv.controlStream.StreamID(), e)
 							default:
 								log.Error().Msgf("could not add datagram to conv id %d: %s", newConv.controlStream.StreamID(), err)
 								return

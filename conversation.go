@@ -223,8 +223,10 @@ func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *qui
 				buf := &util.BytesReadCloser{Reader: bytes.NewReader(dgram)}
 				convID, err := util.ReadVarInt(buf)
 				if err != nil {
-					log.Error().Msgf("could not read conv id from datagram on conv %d: %s", c.controlStream.StreamID(), err)
-					return
+					// F-19: one malformed datagram must not end the
+					// conversation's datagram reception; drop it and carry on
+					log.Warn().Msgf("dropping malformed datagram on conversation %d: %s", c.controlStream.StreamID(), err)
+					continue
 				}
 				if convID == uint64(c.controlStream.StreamID()) {
 					err = c.AddDatagram(c.Context(), dgram[buf.Size()-int64(buf.Len()):])
@@ -240,6 +242,11 @@ func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *qui
 							// delivery on this conversation.
 							log.Warn().Msgf("dropping datagram for unknown channel %d on conversation %d",
 								e.ChannelID, c.controlStream.StreamID())
+						case util.DatagramMalformed:
+							// F-19: garbage payload — same treatment as an
+							// unknown channel: drop the datagram, keep the loop
+							log.Warn().Msgf("dropping malformed datagram on conversation %d: %s",
+								c.controlStream.StreamID(), e)
 						default:
 							log.Error().Msgf("could not add datagram to conv id %d: %s", c.controlStream.StreamID(), err)
 							return
@@ -510,7 +517,9 @@ func (c *Conversation) AddDatagram(ctx context.Context, datagram []byte) error {
 	buf := &util.BytesReadCloser{Reader: bytes.NewReader(datagram)}
 	channelID, err := util.ReadVarInt(buf)
 	if err != nil {
-		return err
+		// F-19: an unparseable datagram is per-datagram garbage; classify it
+		// so the receive loops drop it with a warning instead of terminating
+		return util.DatagramMalformed{Err: err}
 	}
 	channel, ok := c.channelsManager.getChannel(channelID)
 	if !ok {

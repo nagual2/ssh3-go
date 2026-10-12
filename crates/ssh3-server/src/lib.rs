@@ -375,7 +375,14 @@ fn default_password_verifier(username: &str, password: &str) -> io::Result<bool>
             }
 
             let computed_hash = {
-                let _guard = crypt_lock().lock().unwrap();
+                // F-21: a panic while holding this process-wide lock must not
+                // poison it — that would turn one panicking thread into a
+                // process-wide password-auth outage. Recover the guard even
+                // from a poisoned lock: the critical section holds no
+                // invariant to repair (crypt(3) works on a static buffer).
+                let _guard = crypt_lock()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let computed = unsafe { crypt(password.as_ptr(), shadow_entry.sp_pwdp) };
                 if computed.is_null() {
                     return Err(io::Error::last_os_error());

@@ -4,6 +4,14 @@ All notable changes to the **nagual2 fork** of SSH3, starting from the first for
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each section maps to a release tag, newest first.
 
+## [0.1.33] - 2026-10-11
+
+### Fixed
+- **A malformed datagram no longer ends the conversation's datagram reception, on either side** (F-19, `conversation.go`, `server.go`, `util/types.go`; pass-6 audit, `docs/SECURITY_AUDIT_PASS6_2026-10-11.md`): after the F-14 fix the only peer-triggerable way to kill a datagram receive loop left was a datagram whose varints do not parse — one truncated datagram (on the client, sent by a hostile server; on the server, self-inflicted) silently disabled datagram delivery for the whole conversation while streams stayed up. An unparseable datagram is now classified as `util.DatagramMalformed` and dropped with a warning by both loops — the conversation-id parse failure, the channel-id parse failure inside `AddDatagram` and any other malformed payload all take the same drop-and-continue path; everything else (context cancellation, transport errors) stays terminal. The classification is pinned by a test; the Rust client keeps the same residual (`is_benign_datagram_dispatch_error`) and is noted for a follow-up port.
+
+### Security
+- **Rust password authentication can no longer be taken down by a poisoned lock** (F-21, `crates/ssh3-server/src/lib.rs`; pass-6 audit): the process-wide `crypt_lock()` was acquired with `lock().unwrap()`, so a single panic while holding it would poison the mutex and make every subsequent password authentication panic — a process-wide auth outage. The lock is now recovered with `unwrap_or_else(|poisoned| poisoned.into_inner())`, the same idiom the Rust client already uses; the critical section holds no invariant to repair (crypt(3) works on a static buffer).
+
 ## [0.1.32] - 2026-10-10
 
 ### Fixed
