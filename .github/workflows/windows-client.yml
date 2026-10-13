@@ -20,15 +20,15 @@ jobs:
       # the vendored Rust h3 shim has no Go modules.txt: keep Go in module mode
       GOFLAGS: -mod=mod
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
         with:
           go-version-file: go.mod
       - name: Build Windows client (amd64)
-        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=mod -tags disable_password_auth -ldflags "-s -w" -o dist/ssh3-windows-amd64.exe ./cmd/ssh3
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=mod -trimpath -tags disable_password_auth -ldflags "-s -w" -o dist/ssh3-windows-amd64.exe ./cmd/ssh3
       - name: Build Windows client (arm64)
-        run: CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=mod -tags disable_password_auth -ldflags "-s -w" -o dist/ssh3-windows-arm64.exe ./cmd/ssh3
-      - uses: actions/upload-artifact@v4
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -mod=mod -trimpath -tags disable_password_auth -ldflags "-s -w" -o dist/ssh3-windows-arm64.exe ./cmd/ssh3
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ssh3-windows-clients
           path: dist/
@@ -39,11 +39,26 @@ jobs:
     env:
       GOFLAGS: -mod=mod
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
         with:
           go-version-file: go.mod
       - name: Build Windows client natively
-        run: go build -mod=mod -tags disable_password_auth -o ssh3.exe ./cmd/ssh3
+        run: go build -mod=mod -trimpath -tags disable_password_auth -o ssh3.exe ./cmd/ssh3
       - name: Smoke test
         run: ./ssh3.exe -version
+
+  # P4-05: the committed .syso must be reproducible from the reviewed inputs
+  syso-reproducible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version-file: go.mod
+      - name: Regenerate .syso and compare with the committed blob
+        run: |
+          go install github.com/tc-hib/go-winres@latest
+          VER="$(grep -oP 'SOFTWARE_PATCH int = \K[0-9]+' version.go)"
+          go-winres make --in cmd/ssh3/winres.json --out /tmp/rsrc --arch amd64 --product-version "0.1.${VER}" --file-version "0.1.${VER}"
+          cmp /tmp/rsrc_windows_amd64.syso cmd/ssh3/rsrc_windows_amd64.syso
