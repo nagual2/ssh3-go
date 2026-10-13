@@ -17,6 +17,7 @@ builds:
     # vendor/ holds the Rust h3 shim (no Go modules.txt): keep module mode
     flags:
       - -mod=mod
+      - -trimpath
     goos:
       - linux
       - darwin
@@ -57,6 +58,7 @@ builds:
       - GOFLAGS=-mod=mod
     flags:
       - -mod=mod
+      - -trimpath
     goos:
       - linux
     goarch:
@@ -77,6 +79,7 @@ builds:
       - GOFLAGS=-mod=mod
     flags:
       - -mod=mod
+      - -trimpath
     goos:
       - linux
     goarch:
