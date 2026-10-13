@@ -22,7 +22,7 @@ This repository currently contains two implementations:
 This fork focuses on making the Go implementation a practical daily driver. This README is adapted from the upstream project's README and modified by the fork maintainers; fork-only changes are tracked in [CHANGELOG.md](CHANGELOG.md):
 
 - **Windows client is a first-class citizen.** Since v0.1.8 the client compiles for Windows and supports interactive PTY sessions: VT input/output, UTF-8 console code page, real console size, `SIGINT`/`SIGTERM` forwarding, and a 80x24 PTY fallback when the console size cannot be queried.
-- **Server packaging: keys by default, passwords opt-in.** The release `.deb` ships a systemd service (`ssh3-server.service`, UDP 443, secret URL path); no OIDC is configured, and the post-install script generates a self-signed ed25519 certificate with IP/DNS SANs. On amd64 builds the password backend is compiled in but disabled unless the admin opts in (`SSH3_ENABLE_PASSWORD_LOGIN=1` in `/etc/ssh3/ssh3-server.env` or `-enable-password-login`); arm server builds are key-only.
+- **Server packaging: keys by default, passwords opt-in.** The release `.deb` ships a systemd service (`ssh3-server.service`, UDP 443, secret URL path); no OIDC is configured, and the post-install script generates a self-signed ed25519 certificate with IP/DNS SANs. On amd64 builds the password backend is compiled in and enabled by default (`SSH3_ENABLE_PASSWORD_LOGIN=0` turns it off); arm server builds are key-only.
 - **OpenSSH-parity systemd unit.** The unit ships no sandbox directives (`CapabilityBoundingSet`, `NoNewPrivileges`, `Protect*`): the root daemon spawns every session with the authenticated user's uid/gid (like sshd), so `sudo` inside a session regains full root capabilities — tcpdump, trafshow, modprobe and sysctl all work. `KillMode=process` keeps active sessions alive across daemon restarts, as in Debian's `ssh.service`. The trust boundary is key-only auth, not unit-level sandboxing.
 - **Login stats banner.** Interactive sessions print uptime, load, memory, and disk statistics before the shell prompt (`exec` requests are not affected).
 - **Locale and shell fixes.** The server forwards `LANG`/`LC_*` from its systemd environment to user shells and starts the account's real login shell from `/etc/passwd` instead of a hardcoded `/bin/sh`.
@@ -36,7 +36,7 @@ Grab the assets from the [latest release](https://github.com/nagual2/ssh3-go/rel
 | `ssh3-go_client_<ver>_windows_amd64.zip` | Windows client (`ssh3.exe`) |
 | `ssh3-go_client_<ver>_<os>_<arch>.tar.gz` | Client for Linux, macOS, FreeBSD, OpenBSD |
 | `ssh3-go_server_<ver>_linux_<arch>.tar.gz` | Linux server binaries |
-| `ssh3-go_<ver>_amd64.deb` | Server + client package for Debian/Ubuntu/Mint (systemd service, keys by default; password auth opt-in on amd64) |
+| `ssh3-go_<ver>_amd64.deb` | Server + client package for Debian/Ubuntu/Mint (systemd service, password auth on by default on amd64 (`SSH3_ENABLE_PASSWORD_LOGIN=0` disables)) |
 
 Install the Debian package:
 
@@ -87,7 +87,7 @@ The Rust side is no longer just a codec experiment. It includes working client a
 | Session shell and exec | Yes | Yes | Covered by unit and real-binary interop tests. |
 | PTY shell, resize, and signal forwarding | Yes | Yes | Real-binary resize and signal interop are covered in both directions. Windows clients get a PTY with a fixed 80x24 fallback geometry. |
 | Public-key auth | Yes | Yes | Ed25519, P-256, and RSA are covered. |
-| Password auth | Yes | Yes | Go password auth uses the system shadow backend (CGO). Release server builds compile it in on amd64 but keep it disabled by default; arm builds are key-only. |
+| Password auth | Yes | Yes | Go password auth uses the system shadow backend (CGO). Release server builds compile it in on amd64 and enable it by default; arm builds are key-only. |
 | OpenID Connect auth | Yes | Yes | Tokens are now bound to the SSH3 conversation via nonce checking. |
 | SSH agent auth | Yes | Yes | |
 | SSH agent forwarding | Yes | Yes | Unix sockets only; not available from Windows clients. |
@@ -142,7 +142,7 @@ CGO_ENABLED=0 go build -o ssh3 ./cmd/ssh3
 CGO_ENABLED=0 go build -tags disable_password_auth -o ssh3-server ./cmd/ssh3-server
 ```
 
-The release client builds and the arm server builds use `CGO_ENABLED=0` with `-tags disable_password_auth`, which removes password authentication from the binary entirely. The amd64 release server is built with CGO and without the tag, so the shadow/crypt backend is compiled in but stays disabled by default. If you want password auth in your own Linux build:
+The release client builds and the arm server builds use `CGO_ENABLED=0` with `-tags disable_password_auth`, which removes password authentication from the binary entirely. The amd64 release server is built with CGO and without the tag, so the shadow/crypt backend is compiled in and enabled by default (`SSH3_ENABLE_PASSWORD_LOGIN=0` disables). The release client builds cannot authenticate with passwords. If you want a password-capable client in your own Linux build:
 
 ```bash
 CGO_ENABLED=1 go build -o ssh3-server ./cmd/ssh3-server
@@ -650,7 +650,7 @@ cargo run -p ssh3-client -- \
 ```
 
 ### Password
-Go server (amd64 release packages ship the backend compiled in, disabled by default). Enable it either per invocation:
+Go server (amd64 release packages ship the backend compiled in, **enabled by default**). Turn it off with `SSH3_ENABLE_PASSWORD_LOGIN=0` in `/etc/ssh3/ssh3-server.env` or `-enable-password-login=false`:
 
 ```bash
 ssh3-server ... -enable-password-login

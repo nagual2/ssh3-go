@@ -967,11 +967,18 @@ func ServerMain() int {
 		"If certificates have already been generated previously using this flag, "+
 		"they will simply be reused without being regenerated. The public certificates are automatically renewed as long as the "+
 		"server is running. Automatically-generated IP public certificates are not available yet.")
-	// The env default lets systemd EnvironmentFile installs opt into password
-	// auth without editing the unit's ExecStart; the flag overrides it.
-	enablePasswordLogin, _ := strconv.ParseBool(os.Getenv("SSH3_ENABLE_PASSWORD_LOGIN"))
+	// Password auth is enabled by default on builds that ship the backend
+	// (the amd64 release server): the admin turns it off explicitly with
+	// SSH3_ENABLE_PASSWORD_LOGIN=0 or -enable-password-login=false. Brute
+	// force stays bounded by the per-account lockout (SSH3_MAX_PASSWORD_
+	// FAILURES / SSH3_PASSWORD_LOCKOUT_SECONDS) and the unauthenticated
+	// conversation cap.
+	enablePasswordLogin := true
+	if env, ok := os.LookupEnv("SSH3_ENABLE_PASSWORD_LOGIN"); ok {
+		enablePasswordLogin, _ = strconv.ParseBool(env)
+	}
 	if unix_util.PasswordAuthAvailable() {
-		flag.BoolVar(&enablePasswordLogin, "enable-password-login", enablePasswordLogin, "if set, enable password authentication (disabled by default; SSH3_ENABLE_PASSWORD_LOGIN=1 sets it too)")
+		flag.BoolVar(&enablePasswordLogin, "enable-password-login", enablePasswordLogin, "enable password authentication (enabled by default; SSH3_ENABLE_PASSWORD_LOGIN=0 or -enable-password-login=false turn it off)")
 	}
 	// The GatewayPorts policy of the reverse (-R) forwards, the sshd_config
 	// semantics; the env default lets systemd installs opt into wide binds

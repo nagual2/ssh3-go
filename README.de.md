@@ -22,7 +22,7 @@ Dieses Repository enthält derzeit zwei Implementierungen:
 Dieser Fork zielt darauf ab, die Go-Implementierung zu einem praktischen Alltagswerkzeug zu machen. Diese README basiert auf der README des Upstream-Projekts und wurde von den Fork-Maintainern geändert; nur den Fork betreffende Änderungen werden in [CHANGELOG.md](CHANGELOG.md) nachverfolgt:
 
 - **Der Windows-Client ist vollwertig.** Seit v0.1.8 kompiliert der Client für Windows und unterstützt interaktive PTY-Sitzungen: VT-Eingabe/-Ausgabe, UTF-8-Konsolcodepage, echte Konsolengröße, Weiterleitung von `SIGINT`/`SIGTERM` und einen 80x24-PTY-Fallback, wenn die Konsolengröße nicht ermittelt werden kann.
-- **Server-Pakete: standardmäßig Schlüssel, Passwörter als Opt-in.** Das Release-`.deb` liefert einen systemd-Dienst (`ssh3-server.service`, UDP 443, geheimer URL-Pfad); OIDC ist nicht konfiguriert, und das Post-Install-Skript erzeugt ein selbstsigniertes ed25519-Zertifikat mit IP/DNS-SANs. In amd64-Builds ist das Passwort-Backend einkompiliert, aber deaktiviert, bis der Administrator es ausdrücklich einschaltet (`SSH3_ENABLE_PASSWORD_LOGIN=1` in `/etc/ssh3/ssh3-server.env` oder `-enable-password-login`); arm-Server-Builds sind nur mit Schlüsseln.
+- **Server-Pakete: standardmäßig Schlüssel, Passwörter als Opt-in.** Das Release-`.deb` liefert einen systemd-Dienst (`ssh3-server.service`, UDP 443, geheimer URL-Pfad); OIDC ist nicht konfiguriert, und das Post-Install-Skript erzeugt ein selbstsigniertes ed25519-Zertifikat mit IP/DNS-SANs. In amd64-Builds ist das Passwort-Backend einkompiliert und standardmäßig aktiviert (`SSH3_ENABLE_PASSWORD_LOGIN=0` schaltet es ab); arm-Server-Builds sind nur mit Schlüsseln.
 - **systemd-Unit mit OpenSSH-Parität.** Der Unit enthält keine Sandbox-Direktiven (`CapabilityBoundingSet`, `NoNewPrivileges`, `Protect*`): Der Root-Daemon startet jede Sitzung mit der uid/gid des authentifizierten Benutzers (wie sshd), sodass `sudo` innerhalb einer Sitzung die vollen Root-Capabilities zurückerlangt — tcpdump, trafshow, modprobe und sysctl funktionieren. `KillMode=process` erhält aktive Sitzungen über Daemon-Neustarts hinweg, wie in Debians `ssh.service`. Die Vertrauensgrenze ist die Schlüsselauthentifizierung, nicht die Unit-Sandbox.
 - **Statistik-Banner beim Login.** Interaktive Sitzungen zeigen vor dem Shell-Prompt Uptime, Load, Arbeitsspeicher und Festplatte (`exec`-Anfragen bleiben unberührt).
 - **Locale- und Shell-Fixes.** Der Server reicht `LANG`/`LC_*` aus seiner systemd-Umgebung an die Benutzer-Shells weiter und startet die echte Login-Shell des Kontos aus `/etc/passwd` statt eines hartkodierten `/bin/sh`.
@@ -87,7 +87,7 @@ Rust ist kein reines Codec-Experiment mehr: funktionierende Client- und Server-B
 | Sitzung: Shell und Exec | Ja | Ja | Durch Unit- und Real-Binary-Interop-Tests abgedeckt. |
 | PTY-Shell, Resize und Signal-Forwarding | Ja | Ja | Real-Binary-Interop für Resize und Signale ist beidseitig getestet. Windows-Clients erhalten ein PTY mit fester 80x24-Fallback-Geometrie. |
 | Public-Key-Authentifizierung | Ja | Ja | Ed25519, P-256 und RSA sind abgedeckt. |
-| Passwortauthentifizierung | Ja | Ja | Go-Passwortauthentifizierung nutzt das systemweite Shadow-Backend (CGO). amd64-Release-Server-Builds kompilieren sie ein, halten sie aber standardmäßig deaktiviert; arm-Builds sind nur mit Schlüsseln. |
+| Passwortauthentifizierung | Ja | Ja | Go-Passwortauthentifizierung nutzt das systemweite Shadow-Backend (CGO). amd64-Release-Server-Builds kompilieren sie ein und aktivieren sie standardmäßig; arm-Builds sind nur mit Schlüsseln. |
 | OpenID-Connect-Authentifizierung | Ja | Ja | Tokens sind inzwischen per Nonce-Prüfung an die SSH3-Konversation gebunden. |
 | SSH-Agent-Authentifizierung | Ja | Ja | |
 | SSH-Agent-Forwarding | Ja | Ja | Nur Unix-Sockets; aus Windows-Clients nicht verfügbar. |
@@ -141,7 +141,7 @@ CGO_ENABLED=0 go build -o ssh3 ./cmd/ssh3
 CGO_ENABLED=0 go build -tags disable_password_auth -o ssh3-server ./cmd/ssh3-server
 ```
 
-Release-Client-Builds und arm-Server-Builds verwenden `CGO_ENABLED=0` mit `-tags disable_password_auth` — Passwortauthentifizierung ist dann vollständig aus dem Binary entfernt. Der amd64-Release-Server wird mit CGO und ohne den Tag gebaut: das Shadow/crypt-Backend ist einkompiliert, aber standardmäßig deaktiviert. Wer Passwortauthentifizierung im eigenen Linux-Build möchte:
+Release-Client-Builds und arm-Server-Builds verwenden `CGO_ENABLED=0` mit `-tags disable_password_auth` — Passwortauthentifizierung ist dann vollständig aus dem Binary entfernt. Der amd64-Release-Server wird mit CGO und ohne den Tag gebaut: das Shadow/crypt-Backend ist einkompiliert und standardmäßig aktiviert (`SSH3_ENABLE_PASSWORD_LOGIN=0` schaltet es ab). Die Release-Client-Builds können sich nicht per Passwort authentifizieren. Wer einen passwortfähigen Client im eigenen Linux-Build möchte:
 
 ```bash
 CGO_ENABLED=1 go build -o ssh3-server ./cmd/ssh3-server
@@ -205,9 +205,15 @@ ssh3 max@my-server.example.org/ssh3-term -privkey ~/.ssh/id_ed25519
 
 ### Dateiübertragung
 
-Stage 2 ergänzt den `ssh3 -f`-Modus über einen dedizierten SFTP-Kanal (der
-Server stellt `pkg/sftp` bereit, eingesperrt im Home-Verzeichnis des
-Sitzungsbenutzers; angelegte Dateien gehören diesem Benutzer):
+Stage 2 ergänzt den `ssh3 -f`-Modus über einen dedizierten SFTP-Kanal (angelegte
+Dateien gehören dem Sitzungsbenutzer). Die Pfad-Isolation folgt standardmäßig
+dem sshd-Modell (`-sftp-jail chroot`): der Server startet pro Sitzung einen
+kurzlebigen Kindprozess, der in das Home-Verzeichnis des Benutzers chrootet und
+vor dem ersten Pfadzugriff auf dessen uid/gid wechselt — die Einschließung
+übernimmt der Kernel, und der netzseitige Prozess öffnet nie Benutzerdateien.
+`-sftp-jail lexical` erhält das historische In-Process-Jail (lexikalische
+Präfixprüfung; es gelten die eigenen Privilegien des Serverprozesses — nur
+sinnvoll für einen unprivilegierten Single-User-Server):
 
 ```bash
 # Datei hochladen (Remote-Operand zuletzt)
@@ -668,7 +674,7 @@ cargo run -p ssh3-client -- \
 ```
 
 ### Passwort
-Go-Server (amd64-Release-Pakete liefern das einkompilierte, standardmäßig deaktivierte Backend). Einschalten pro Aufruf:
+Go-Server (amd64-Release-Pakete liefern das einkompilierte, standardmäßig aktivierte Backend; `SSH3_ENABLE_PASSWORD_LOGIN=0` schaltet es ab). Aufruf mit Passwort:
 
 ```bash
 ssh3-server ... -enable-password-login

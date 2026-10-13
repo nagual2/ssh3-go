@@ -4,6 +4,11 @@ All notable changes to the **nagual2 fork** of SSH3, starting from the first for
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each section maps to a release tag, newest first.
 
+## [0.1.34] - 2026-10-12
+
+### Changed
+- **Password authentication is enabled by default on the amd64 release server** (`cmd/ssh3-server.go`): the `enablePasswordLogin` default flips from off to on — the admin turns it off explicitly with `SSH3_ENABLE_PASSWORD_LOGIN=0` in `/etc/ssh3/ssh3-server.env` or `-enable-password-login=false`. Brute force stays bounded by the per-account lockout (`SSH3_MAX_PASSWORD_FAILURES` / `SSH3_PASSWORD_LOCKOUT_SECONDS`) and the unauthenticated conversation cap. arm server builds remain key-only (no CGO shadow backend), and the release client builds still ship without the password prompt — a password-capable client requires a custom build. Packaging comments (`packaging/ssh3-server.env`, `packaging/ssh3-server.service`) and the trilingual README updated to match.
+
 ## [0.1.33] - 2026-10-11
 
 ### Fixed

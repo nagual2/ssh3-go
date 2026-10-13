@@ -22,9 +22,9 @@ KillMode=process
 # whole cgroup, so they would clip capabilities that sudo regains inside a
 # session — root could not run tcpdump, trafshow, modprobe or sysctl (EPERM),
 # which OpenSSH sessions can. The trust boundary is key-based auth by
-# default: password auth is compiled in on amd64 but disabled unless
-# -enable-password-login (or SSH3_ENABLE_PASSWORD_LOGIN=1 in
-# /etc/ssh3/ssh3-server.env) is set. This mirrors Debian's ssh.service,
+# default: password auth is compiled in on amd64 and enabled by default;
+# -enable-password-login=false (or SSH3_ENABLE_PASSWORD_LOGIN=0 in
+# /etc/ssh3/ssh3-server.env) turns it off. This mirrors Debian's ssh.service,
 # which ships no such directives either.
 [Install]
 WantedBy=multi-user.target
