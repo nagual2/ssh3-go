@@ -5,6 +5,9 @@
 > [!NOTE]
 > SSH3 ist weiterhin experimentell, und der Protokollname kann sich noch ändern. Das Protokoll bleibt SSH-typische Sitzungs- und Kanalsemantik über QUIC und HTTP/3 Extended CONNECT, aber die Implementierung und das drumherum entwickeln sich weiter.
 
+> [!WARNING]
+> **Der Rust-Workspace unter `crates/` ist seit 2026-10-13 eingefroren (dormant)**: er wird nicht in CI gebaut, in keinem Release ausgeliefert, und die Audit-Fundstellen darin (F-16, F-20, der F-19-Client-Rest) sind mit dem Code eingefroren — keine Fixes geplant. Siehe `crates/FROZEN.md`. Das einzige ausgelieferte Produkt ist die Go-Implementierung.
+
 # SSH3 over HTTP/3
 [English](README.md) | [Русский](README.ru.md) | **Deutsch**
 
