@@ -198,18 +198,18 @@ ssh3-server -generate-public-cert my-domain.example.org -url-path /ssh3
 Пример Go-клиента:
 
 ```bash
-ssh3 -privkey ~/.ssh/id_ed25519 username@my-domain.example.org/ssh3
+ssh3 -i ~/.ssh/id_ed25519 username@my-domain.example.org/ssh3
 ```
 
 Для релизного сервера:
 
 ```bash
-ssh3 max@my-server.example.org/ssh3-term -privkey ~/.ssh/id_ed25519
+ssh3 max@my-server.example.org/ssh3-term -i ~/.ssh/id_ed25519
 ```
 
 ### Передача файлов
 
-Stage 2 добавляет режим `ssh3 -f` поверх отдельного SFTP-канала (созданные
+Stage 2 добавляет режим `ssh3 -transfer` поверх отдельного SFTP-канала (созданные
 файлы принадлежат сессионному пользователю). Изоляция путей по умолчанию
 следует модели sshd (`-sftp-jail chroot`): сервер перезапускает короткоживущий
 дочерний процесс на сессию, который делает chroot в домашний каталог
@@ -221,27 +221,30 @@ Stage 2 добавляет режим `ssh3 -f` поверх отдельног�
 
 ```bash
 # загрузка файла (remote-операнд последний)
-ssh3 -f ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
+ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
 
 # загрузка каталога целиком, рекурсивно
-ssh3 -f -r ~/project-dir max@my-server.example.org/ssh3-term:backups/
+ssh3 -transfer -r ~/project-dir max@my-server.example.org/ssh3-term:backups/
 
 # скачивание (remote-операнд первый)
-ssh3 -f max@my-server.example.org/ssh3-term:logs/app.log ./app.log
+ssh3 -transfer max@my-server.example.org/ssh3-term:logs/app.log ./app.log
 
 # докачка прерванных передач вместо перезаписи
-ssh3 -f --continue big-disk-image.raw max@my-server.example.org/ssh3-term:images/raw
+ssh3 -transfer --continue big-disk-image.raw max@my-server.example.org/ssh3-term:images/raw
 
 # форсировать проверку SHA-256 перечитыванием удалённого файла
 # (автоматически для передач больше 32 МиБ)
-ssh3 -f --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
+ssh3 -transfer --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
 ```
 
 Примечания: порт по умолчанию 443, URL-путь — `/ssh3-term`; переопределяются
-флагами `-P` и `-U`, либо полной формой операнда
-`user@host:port/url_path:remote_path`. Нерегулярные файлы (симлинки,
+флагами `-p` (ssh2-форма) и `-U`, либо полной формой операнда
+`user@host:port/url_path:remote_path` (форковский `-P` в режиме передачи
+работает как устаревший алиас `-p`). Нерегулярные файлы (симлинки,
 устройства) пропускаются при рекурсивной передаче, пустой каталог создаётся
-на противоположной стороне.
+на противоположной стороне. Старая форма `-f` выведена из употребления: ssh2
+резервирует `-f` под фоновый режим, поэтому она завершается ошибкой с
+указанием на `-transfer`.
 
 ## Контроль-мастер (мультиплексирование соединений)
 
@@ -250,22 +253,24 @@ ssh3 -f --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
 
 ```bash
 # запустить постоянный мастер в фоне (команда возвращается сразу)
-ssh3 -control-master=yes -control-persist=yes user@host
+ssh3 -M -o ControlPersist=yes user@host
 
 # последующие вызовы работают как slave: без нового хендшейка, старт ~5x быстрее
 ssh3 -control-master=auto user@host 'uptime'
 ssh3 -control-master=auto user@host 'tail -n 5 /var/log/syslog'
-ssh3 -control-master=auto -forward-tcp 8080/127.0.0.1@80 user@host 'sleep 30'
+ssh3 -control-master=auto -L 8080:127.0.0.1:80 user@host 'sleep 30'
 
 # остановить мастер
-ssh3 -O exit -control-path ~/.ssh3/cm-user@host:443 user@host
+ssh3 -O exit -S ~/.ssh3/cm-user@host:443 user@host
 ```
 
 | Флаг | Значение |
 |------|----------|
-| `-control-master no\|yes\|auto` | `auto` использует работающий мастер и запускает новый, если его нет; `yes` всегда запускает; по умолчанию `no` |
-| `-control-path PATH` | путь к управляющему сокету; по умолчанию `~/.ssh3/cm-<user>@<host>:<port>`, права 0600 |
-| `-control-persist no\|yes\|<секунды>` | держать мастера в фоне после конца сессий; `yes` = вечно, число = таймаут простоя |
+| `-M` | режим мастера (ssh2 `-M`), то же, что `-control-master yes` |
+| `-S PATH` | путь к управляющему сокету (ssh2 `-S`), то же, что `-control-path PATH` |
+| `-control-master no\|yes\|auto` | `auto` использует работающий мастер и запускает новый, если его нет; `yes` всегда запускает; по умолчанию `no` (также `-o ControlMaster=…`) |
+| `-control-path PATH` | путь к управляющему сокету; по умолчанию `~/.ssh3/cm-<user>@<host>:<port>`, права 0600 (также `-o ControlPath=…`) |
+| `-control-persist no\|yes\|<секунды>` | держать мастера в фоне после конца сессий; `yes` = вечно, число = таймаут простоя (также `-o ControlPersist=…`) |
 | `-O check\|stop\|exit` | управляющая операция на работающем мастере; операнд-цель всё ещё нужен, если не задан явный `-control-path`, а неизвестное значение отвергается заранее со списком поддерживаемых |
 
 Примечания: мастер - отсоединённая копия этого же бинарника
@@ -273,7 +278,7 @@ ssh3 -O exit -control-path ~/.ssh3/cm-user@host:443 user@host
 forwarding мультиплексируются через единственное QUIC-соединение мастера.
 Медиана 100 последовательных exec падает с ~130 мс (холодный путь, хендшейк
 на каждый) до ~24 мс (~17%) при ровно одном хендшейке. Ограничения:
-`-proxy-jump` несовместим (сочетание с `-control-master` — ошибка), Windows
+`-J`/`-proxy-jump` несовместим (сочетание с `-control-master` — ошибка), Windows
 не поддерживается. Интерактивные pty-slave-сессии пробрасывают через мастер
 изменение размера терминала и внеполосные сигналы. Управляющий сокет,
 оставшийся от убитого мастера, обнаруживается и удаляется, а не приводит к
@@ -314,8 +319,24 @@ ssh3 -O stop user@host
 клиент ждать.
 
 ## Проброс портов
-Локальные TCP- и UDP-форварды работают на клиенте, туннелируясь через
-ssh3-соединение (`локальный_порт/удалённый_ip@удалённый_порт`):
+Локальные форварды туннелируются через ssh3-соединение. Основная форма —
+ssh2-синтаксис `-L [bind:]port:host:hostport`, повторяемый; необязательный
+префикс `udp://` выбирает UDP, которого в ssh(1) нет:
+
+```bash
+# ssh2-форма: локальный 8080 к дозвону сервера на 10.0.0.10:80
+ssh3 -L 8080:10.0.0.10:80 user@host
+
+# явный локальный адрес; IPv6-литералы в скобках
+ssh3 -L 127.0.0.1:8080:10.0.0.10:80 user@host
+ssh3 -L '[::1]:8080:[::1]:80' user@host
+
+# UDP — документированное расширение ssh3 (префикс udp://)
+ssh3 -L udp://5353:192.0.2.1:53 user@host
+```
+
+Форковская форма `локальный_порт/удалённый_ip@удалённый_порт` работает как
+устаревший алиас:
 
 ```bash
 ssh3 -forward-tcp 8080/10.0.0.10@80 user@host
@@ -326,7 +347,7 @@ ssh3 -forward-udp 5353/192.0.2.1@53 user@host
 `Ctrl+C` закрывает его:
 
 ```bash
-ssh3 -N -forward-tcp 8080/10.0.0.10@80 user@host
+ssh3 -N -L 8080:10.0.0.10:80 user@host
 ```
 
 ### Обратный проброс (`-R`)
@@ -422,6 +443,45 @@ ID, из-за чего старые пиеры падали бы вместо gr
 управляющего канала или самой беседы срывает все живые bridging-соединения.
 Обе половины лежат в невыпущенном дереве, поэтому `-D` требует сервера,
 собранного из этого источника.
+
+## Совместимость с OpenSSH (ssh2-канон)
+
+Где функционал совпадает, ключи запуска следуют ssh(1)/sshd(8) — скрипты,
+написанные под OpenSSH и под сестринскую C-реализацию, ведут себя одинаково
+с этим клиентом (волна CLI-паритета, CTO_TASK §7c). Форковские формы
+сохранены как устаревшие алиасы: живые установки и существующие скрипты
+продолжают работать.
+
+| ssh2-форма | Смысл | Устаревший форковский алиас |
+|---|---|---|
+| `-i ФАЙЛ` | приватный ключ для pubkey-аутентификации | `-privkey ФАЙЛ` |
+| `-V` | напечатать версию и выйти | `-version` |
+| `-A` | проброс SSH-агента | `-forward-agent` |
+| `-J ЦЕЛЬ[,ЦЕЛЬ...]` | proxy jump; каждый хоп должен работать под ssh3-server | `-proxy-jump URL` (один хоп) |
+| `-L [BIND:]PORT:HOST:PORT` | локальный форвард, повторяемый; префикс `udp://` выбирает UDP | `-forward-tcp/-forward-udp ЛОКАЛЬНЫЙ/УДАЛЁННЫЙ@ПОРТ` |
+| `-M` / `-S ПУТЬ` | режим мастера / управляющий сокет | `-control-master yes` / `-control-path ПУТЬ` |
+| `-p ПОРТ` | удалённый порт (также в режиме передачи) | `-P ПОРТ` (только режим передачи) |
+| `-q` | тихий режим: без диагностики, ошибки остаются | — |
+| `-4` / `-6` | принудительное семейство адресов | — |
+| `-transfer SRC DST` | режим передачи файлов | `-f` (выведен: ssh2 резервирует `-f` под фон; завершается ошибкой с указанием на `-transfer`) |
+
+Сервер (канон sshd(8)): `-h КЛЮЧ` = host key (алиас `-key`), `-c СЕРТ` =
+host-сертификат (алиас `-cert`), `-p ПОРТ` = порт слушателя (переопределяет
+порт `-bind`, сам адрес остаётся в `-bind` — QUIC нужен явный UDP-адрес),
+`-V` = версия.
+
+Ключи `-o` по модели ssh_config: `Port`, `User`, `IdentityFile`,
+`LocalForward`, `RemoteForward`, `DynamicForward`, `ProxyJump`,
+`ControlMaster`, `ControlPath`, `ControlPersist` (рядом с существующими
+`StrictHostKeyChecking`, `EscapeChar`, `RequestTTY`, `Term`,
+`VerifyHostKeyDNS`). Приоритет: флаг CLI > `-o` > `~/.ssh/config`.
+
+Поведенческие таймауты следуют канону sshd: простаивающая сессия не убивается
+(форма `ClientAliveInterval=0` — дефолтный idle-таймаут 24 ч на обеих
+сторонах, настраивается `-max-idle-timeout`), хендшейку отведён масштаб
+`LoginGraceTime` (120 с, `-handshake-idle-timeout`). Учётная запись root
+всегда отвергает парольную аутентификацию (аналог
+`PermitRootLogin prohibit-password`): root входит только по ключу.
 
 ## Знакомые флаги ssh(1)
 ### Принудительный PTY (`-t`)

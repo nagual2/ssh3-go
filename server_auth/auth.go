@@ -142,6 +142,14 @@ func HandleBasicAuth(handlerFunc ssh3.AuthenticatedHandlerFunc, conv *ssh3.Conve
 			return
 		}
 
+		// the sshd PermitRootLogin prohibit-password analog: root never
+		// authenticates by password
+		if PasswordLoginRefused(username) {
+			log.Warn().Msgf("password auth for %s refused: the root account authenticates by key only (PermitRootLogin prohibit-password)", username)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
 		ok, err := unix_util.UserPasswordAuthentication(username, password)
 		if err != nil || !ok {
 			if err != nil {

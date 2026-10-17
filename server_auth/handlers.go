@@ -82,10 +82,18 @@ func VerifyJWT(identities []IdentityVerifier, base64ConversationID string, w htt
 
 // CheckBasicAuth verifies the request's Basic password against the account:
 // a locked-out account is refused with 429 without touching the password
-// backend, a failed attempt books into the brute-force lockout.
+// backend, a failed attempt books into the brute-force lockout. The root
+// account is refused unconditionally (the sshd PermitRootLogin
+// prohibit-password analog): root authenticates by key only.
 func CheckBasicAuth(username string, w http.ResponseWriter, r *http.Request) bool {
 	_, password, ok := r.BasicAuth()
 	if !ok {
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+
+	if PasswordLoginRefused(username) {
+		log.Warn().Msgf("password auth for %s refused: the root account authenticates by key only (PermitRootLogin prohibit-password)", username)
 		w.WriteHeader(http.StatusUnauthorized)
 		return false
 	}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -46,22 +47,36 @@ func runControlOp(ctx context.Context, controlPath, op string) int {
 	return 0
 }
 
+// parseControlPersistStrict maps a ControlPersist value ("", no, yes or a
+// number of seconds) to (idle timeout, persist?): "no" gives (0, false)
+// meaning no master at all, "yes" gives (0, true) meaning persist forever.
+// An invalid token is an error, unlike parseControlPersist which degrades to
+// "no" with a warning.
+func parseControlPersistStrict(value string) (time.Duration, bool, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "", "no":
+		return 0, false, nil
+	case "yes":
+		return 0, true, nil
+	}
+	secs, err := strconv.Atoi(normalized)
+	if err != nil || secs < 0 {
+		return 0, false, fmt.Errorf("invalid ControlPersist value %q: want no, yes or a number of seconds", value)
+	}
+	return time.Duration(secs) * time.Second, true, nil
+}
+
 // parseControlPersist maps -control-persist to an idle timeout: "no" gives
 // (0, false) meaning no master at all, "yes" gives (0, true) meaning
 // persist forever, a number of seconds gives that idle timeout.
 func parseControlPersist(value string) (time.Duration, bool) {
-	if value == "" || value == "no" {
-		return 0, false
-	}
-	if value == "yes" {
-		return 0, true
-	}
-	secs, err := strconv.Atoi(value)
-	if err != nil || secs < 0 {
+	persist, ok, err := parseControlPersistStrict(value)
+	if err != nil {
 		log.Warn().Msgf("invalid -control-persist %q, treating as no", value)
 		return 0, false
 	}
-	return time.Duration(secs) * time.Second, true
+	return persist, ok
 }
 
 // startDetachedMaster re-executes this binary detached, with the daemon env

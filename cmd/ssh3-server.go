@@ -952,7 +952,9 @@ func ServerMain() int {
 	pprofutil.ServeIfEnabled(os.Getenv("SSH3_PPROF"))
 	bindAddr := flag.String("bind", "[::]:443", "the address:port pair to listen to, e.g. 0.0.0.0:443")
 	verbose := flag.Bool("v", false, "verbose mode, if set")
-	displayVersion := flag.Bool("version", false, "if set, displays the software version on standard output and exit")
+	displayVersionVar := false
+	flag.BoolVar(&displayVersionVar, "version", false, "if set, displays the software version on standard output and exit")
+	flag.BoolVar(&displayVersionVar, "V", false, "print the software version and exit (same as -version)")
 	urlPath := flag.String("url-path", "/ssh3-term", "the secret URL path on which the ssh3 server listens")
 	streamRxMiB := flag.Int("stream-rx-mb", 8, "initial per-stream flow control receive window in MiB")
 	connRxMiB := flag.Int("conn-rx-mb", 16, "initial connection-level flow control receive window in MiB")
@@ -961,6 +963,11 @@ func ServerMain() int {
 		"that will be stored at the paths indicated by the -cert and -key args (they must not already exist)")
 	certPath := flag.String("cert", "./cert.pem", "the filename of the server certificate (or fullchain)")
 	keyPath := flag.String("key", "./priv.key", "the filename of the certificate private key")
+	// the sshd(8)-shaped aliases (CLI-parity wave, CTO_TASK §7c item 9/10):
+	// -h for the host key, -c for the host certificate, -p for the port
+	certAlias := flag.String("c", "", "host certificate file (sshd -c; same as -cert)")
+	keyAlias := flag.String("h", "", "host key file (sshd -h; same as -key)")
+	serverPort := flag.Int("p", 0, "port to listen on (sshd -p; overrides the -bind port, the bind address stays -bind)")
 	var autogenCertificates autogenCertificates
 	flag.Var(&autogenCertificates, "generate-public-cert", "Automatically produce and use a valid public certificate using"+
 		"Let's Encrypt for the provided domain name. The flag can be used several times to generate several certificates."+
@@ -1044,16 +1051,21 @@ func ServerMain() int {
 		maxConnections = envMax
 	}
 	flag.IntVar(&maxConnections, "max-connections", maxConnections, "maximum concurrent QUIC connections, 0 for no limit (SSH3_MAX_CONNECTIONS sets it too)")
-	maxIdleTimeoutSecs := 30
+	// the ssh2 behavioral canon (§7c item 11): sshd never kills an idle
+	// session (ClientAliveInterval=0) and gives LoginGraceTime=120s for the
+	// handshake; quic-go has no "unset" (0 → its 30s default), so the canon
+	// is expressed as explicit large defaults. The keepalive a client sends
+	// keeps a live connection alive regardless of these values.
+	maxIdleTimeoutSecs := int(ssh2IdleTimeout.Seconds())
 	if envSecs, err := strconv.Atoi(os.Getenv("SSH3_MAX_IDLE_TIMEOUT")); err == nil {
 		maxIdleTimeoutSecs = envSecs
 	}
-	flag.IntVar(&maxIdleTimeoutSecs, "max-idle-timeout", maxIdleTimeoutSecs, "QUIC idle timeout in seconds before a quiet connection is closed (SSH3_MAX_IDLE_TIMEOUT sets it too)")
-	handshakeIdleTimeoutSecs := 5
+	flag.IntVar(&maxIdleTimeoutSecs, "max-idle-timeout", maxIdleTimeoutSecs, "QUIC idle timeout in seconds before a quiet connection is closed; the default follows the ssh2 canon (ClientAliveInterval=0: do not kill the idle) (SSH3_MAX_IDLE_TIMEOUT sets it too)")
+	handshakeIdleTimeoutSecs := int(ssh2HandshakeTimeout.Seconds())
 	if envSecs, err := strconv.Atoi(os.Getenv("SSH3_HANDSHAKE_IDLE_TIMEOUT")); err == nil {
 		handshakeIdleTimeoutSecs = envSecs
 	}
-	flag.IntVar(&handshakeIdleTimeoutSecs, "handshake-idle-timeout", handshakeIdleTimeoutSecs, "QUIC handshake timeout in seconds (SSH3_HANDSHAKE_IDLE_TIMEOUT sets it too)")
+	flag.IntVar(&handshakeIdleTimeoutSecs, "handshake-idle-timeout", handshakeIdleTimeoutSecs, "QUIC handshake timeout in seconds; the default follows the ssh2 LoginGraceTime scale (SSH3_HANDSHAKE_IDLE_TIMEOUT sets it too)")
 	maxIncomingStreams := 100
 	if envMax, err := strconv.Atoi(os.Getenv("SSH3_MAX_INCOMING_STREAMS")); err == nil {
 		maxIncomingStreams = envMax
@@ -1065,6 +1077,46 @@ func ServerMain() int {
 	}
 	flag.IntVar(&maxIncomingUniStreams, "max-incoming-uni-streams", maxIncomingUniStreams, "maximum concurrent peer-initiated unidirectional QUIC streams per connection (SSH3_MAX_INCOMING_UNI_STREAMS sets it too)")
 	flag.Parse()
+
+	// -p (sshd canon): only the port moves, the bind address stays -bind's
+	if *serverPort != 0 {
+		if *serverPort < 0 || *serverPort > 0xFFFF {
+			fmt.Fprintf(os.Stderr, "the -p port %d is out of range\n", *serverPort)
+			return -1
+		}
+		merged, err := mergeBindPort(*bindAddr, uint16(*serverPort))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", err)
+			return -1
+		}
+		*bindAddr = merged
+	}
+
+	// -c/-h (sshd canon): apply the aliases; giving both forms of the same
+	// knob is an error instead of a silent last-one-wins
+	certFlagSet := false
+	keyFlagSet := false
+	certAliasSet := false
+	keyAliasSet := false
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "cert":
+			certFlagSet = true
+		case "key":
+			keyFlagSet = true
+		case "c":
+			certAliasSet = true
+		case "h":
+			keyAliasSet = true
+		}
+	})
+	certPathValue, keyPathValue, aliasesErr := resolveServerCertKeyAliases(certFlagSet, keyFlagSet, certAliasSet, keyAliasSet, *certPath, *keyPath, *certAlias, *keyAlias)
+	if aliasesErr != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", aliasesErr)
+		return -1
+	}
+	*certPath = certPathValue
+	*keyPath = keyPathValue
 
 	policy, policyErr := parsePermitOpen(permitOpenSpec)
 	if policyErr != nil {
@@ -1109,7 +1161,7 @@ func ServerMain() int {
 	}
 	maxReverseForwardsPerUser = maxReverseForwards
 
-	if *displayVersion {
+	if displayVersionVar {
 		fmt.Fprintln(os.Stdout, filepath.Base(os.Args[0]), "version", ssh3.GetCurrentSoftwareVersion())
 		return 0
 	}

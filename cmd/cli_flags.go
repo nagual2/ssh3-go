@@ -83,6 +83,27 @@ func parseDynamicForwardSpec(spec string) (dynamicForwardSpec, error) {
 	return dynamicForwardSpec{BindAddress: bindAddress, BindPort: port}, nil
 }
 
+// dynamicForwardFlags backs the repeatable -D flag and the -o DynamicForward
+// keyword.
+type dynamicForwardFlags []dynamicForwardSpec
+
+func (f *dynamicForwardFlags) String() string {
+	specs := make([]string, len(*f))
+	for i, spec := range *f {
+		specs[i] = spec.SpecString()
+	}
+	return strings.Join(specs, ",")
+}
+
+func (f *dynamicForwardFlags) Set(value string) error {
+	spec, err := parseDynamicForwardSpec(value)
+	if err != nil {
+		return err
+	}
+	*f = append(*f, spec)
+	return nil
+}
+
 // maxSubsystemNameLength is the length a subsystem name may not exceed: the
 // value ends up in a single SSH string field, and OpenSSH refuses anything
 // longer than the packet it can send.

@@ -69,9 +69,19 @@ type quicTuning struct {
 	MaxIncomingStreams int64
 }
 
+// The ssh2 behavioral canon for timeouts (CTO_TASK §7c item 11): sshd never
+// kills an idle session (ClientAliveInterval=0) and gives the login 120 s
+// (LoginGraceTime). quic-go has no "unset" (a zero MaxIdleTimeout becomes its
+// 30 s default), so the canon is expressed as explicit large values on both
+// endpoints — QUIC negotiates the smaller of the two.
+const (
+	ssh2IdleTimeout      = 24 * time.Hour
+	ssh2HandshakeTimeout = 120 * time.Second
+)
+
 func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog io.Writer, ssh3Dir string, certPool *x509.CertPool, knownHostsPath string, knownHosts ssh3.KnownHosts,
 	strictHostKeyChecking ssh3.StrictHostKeyChecking, verifyHostKeyDNS verifyHostKeyDNSSetting,
-	oidcConfig []*oidc.OIDCConfig, options *client_config.Config, proxyRemoteAddr *net.UDPAddr, tty *os.File, tuning quicTuning) (*quic.Conn, int) {
+	oidcConfig []*oidc.OIDCConfig, options *client_config.Config, proxyRemoteAddr *net.UDPAddr, tty *os.File, tuning quicTuning, addressFamily int) (*quic.Conn, int) {
 
 	var err error
 	remoteAddr := proxyRemoteAddr
@@ -83,8 +93,24 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 		}
 	}
 
+	// -4/-6 (ssh2 address family): a forced family must match the resolved
+	// peer address, otherwise the dial would fail with an opaque socket error
+	if addressFamily == 4 && remoteAddr.IP.To4() == nil {
+		log.Error().Msgf("-4: %s resolves to an IPv6 address", options.Hostname())
+		return nil, -1
+	}
+	if addressFamily == 6 && remoteAddr.IP.To4() != nil {
+		log.Error().Msgf("-6: %s resolves to an IPv4 address", options.Hostname())
+		return nil, -1
+	}
+
 	netString := "udp"
-	if runtime.GOOS == "darwin" {
+	switch {
+	case addressFamily == 4:
+		netString = "udp4"
+	case addressFamily == 6:
+		netString = "udp6"
+	case runtime.GOOS == "darwin":
 		// on MacOS, the don't fragment (DF) bit is not set on dual-stack socket ("udp")
 		// This causes quic-go to not perform MTU discovery which can prevent the proxy jump from working at all.
 		// cf: - https://github.com/francoismichel/ssh3/issues/129
@@ -127,6 +153,12 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 	if tuning.KeepAlivePeriod > 0 {
 		qconf.KeepAlivePeriod = tuning.KeepAlivePeriod
 	}
+	// ssh2 canon (§7c item 11): do not kill an idle session (the negotiated
+	// idle timeout is the smaller of the endpoints' values, so the client
+	// must raise its side too), and give the handshake the LoginGraceTime
+	// scale instead of the quic-go 5 s default
+	qconf.MaxIdleTimeout = ssh2IdleTimeout
+	qconf.HandshakeIdleTimeout = ssh2HandshakeTimeout
 
 	hostKey := options.CanonicalHostFormat()
 	if certs, ok := knownHosts[hostKey]; ok {
@@ -389,7 +421,11 @@ func parseAddrPort(addrPort string) (localPort int, remoteIP net.IP, remotePort 
 	return localPort, remoteIP, remotePort, err
 }
 
-func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionParsers map[client_config.OptionName]client_config.OptionParser) (*client_config.Config, error) {
+// getConfigOptions resolves the effective username/hostname/port/urlpath for
+// the target: the -p/-o Port override beats the operand port, which beats the
+// ~/.ssh/config port; for the username the operand user@ beats the -o User
+// override, which beats the config user.
+func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionParsers map[client_config.OptionName]client_config.OptionParser, portOverride uint16, userOverride string) (*client_config.Config, error) {
 	urlHostname, urlPort := hostUrl.Hostname(), hostUrl.Port()
 	// The user known before reading the config: it feeds the Match user
 	// criterion and the default username resolution below.
@@ -410,7 +446,11 @@ func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionPars
 	}
 
 	port := 443
-	if urlPort != "" {
+	switch {
+	case portOverride > 0:
+		// -p / -o Port: the ssh2 CLI override wins over everything
+		port = int(portOverride)
+	case urlPort != "":
 		if parsedPort, err := strconv.Atoi(urlPort); err == nil && parsedPort < 0xffff {
 			// There is a port in the CLI and the port is valid. Use the CLI port.
 			port = parsedPort
@@ -422,12 +462,15 @@ func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionPars
 			fmt.Fprintf(os.Stderr, "Bad port '%s'\n", urlPort)
 			return nil, err
 		}
-	} else if configPort != -1 {
+	case configPort != -1:
 		// There is no port in the CLI, but one in a config file. Use the config port.
 		port = configPort
 	}
 
 	username := urlUser
+	if username == "" {
+		username = userOverride
+	}
 	if username == "" {
 		username = configUser
 	}
@@ -450,8 +493,8 @@ func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionPars
 	return client_config.NewConfig(username, hostname, port, urlPath, configAuthMethods, pluginOptions)
 }
 
-func getConnectionMaterialFromURL(hostUrl *url.URL, sshConfig *matchcfg.Resolver, cliAuthMethods []interface{}, cliOptions map[client_config.OptionName]client_config.Option, optionParsers map[client_config.OptionName]client_config.OptionParser) (agent.ExtendedAgent, *client_config.Config, error) {
-	configOptions, err := getConfigOptions(hostUrl, sshConfig, optionParsers)
+func getConnectionMaterialFromURL(hostUrl *url.URL, sshConfig *matchcfg.Resolver, cliAuthMethods []interface{}, cliOptions map[client_config.OptionName]client_config.Option, optionParsers map[client_config.OptionName]client_config.OptionParser, portOverride uint16, userOverride string) (agent.ExtendedAgent, *client_config.Config, error) {
+	configOptions, err := getConfigOptions(hostUrl, sshConfig, optionParsers, portOverride, userOverride)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not apply config to %s: %s", hostUrl, err)
 	}
@@ -553,6 +596,9 @@ func ClientMain() int {
 	internal.CloseServerPluginsRegistry()
 
 	// for other auth-related CLI args, go see auth/plugins, as they define plugin-specific auth CLI args and config options, such a pubkey/privkey-based auth
+	// The ssh2 canon (ssh(1)) forms are primary; the fork's own names stay as
+	// deprecated aliases so existing installs and scripts keep working
+	// (CLI-parity wave, CTO_TASK §7c).
 	keyLogFile := flag.String("keylog", "", "Write QUIC TLS keys and master secret in the specified keylog file: only for debugging purpose")
 	passwordAuthentication := flag.Bool("use-password", false, "if set, do classical password authentication")
 	insecure := flag.Bool("insecure", false, "if set, skip server certificate verification")
@@ -563,33 +609,49 @@ func ClientMain() int {
 	issuerUrl := flag.String("use-oidc", "", "if set, force the use of OpenID Connect with the specified issuer url as parameter (it opens a browser window)")
 	oidcConfigFileName := flag.String("oidc-config", "", "OpenID Connect json config file containing the \"client_id\" and \"client_secret\" fields needed for most identity providers")
 	verbose := flag.Bool("v", false, "if set, enable verbose mode")
-	displayVersion := flag.Bool("version", false, "if set, displays the software version on standard output and exit")
+	quiet := flag.Bool("q", false, "quiet mode: suppress diagnostic log messages, errors are still logged (ssh2 -q)")
+	displayVersionVar := false
+	flag.BoolVar(&displayVersionVar, "version", false, "if set, displays the software version on standard output and exit")
+	flag.BoolVar(&displayVersionVar, "V", false, "print the software version and exit (ssh2 -V; same as -version)")
+	forwardAgentVar := false
+	flag.BoolVar(&forwardAgentVar, "forward-agent", false, "if set, forwards ssh agent to be used with sshv2 connections on the remote host")
+	flag.BoolVar(&forwardAgentVar, "A", false, "enable agent forwarding (ssh2 -A; same as -forward-agent)")
 	streamRxMiB := flag.Int("stream-rx-mb", 8, "initial per-stream flow control receive window in MiB")
 	connRxMiB := flag.Int("conn-rx-mb", 16, "initial connection-level flow control receive window in MiB")
 	controlOp := flag.String("O", "", "control operation on an existing control master: check, stop or exit")
-	controlMaster := flag.String("control-master", "no", "share one connection across invocations: no, yes or auto (reuse a running master, else start one in background; not compatible with -proxy-jump; unsupported on windows)")
+	controlMaster := flag.String("control-master", "no", "share one connection across invocations: no, yes or auto (reuse a running master, else start one in background; not compatible with -J; unsupported on windows)")
 	controlPathFlag := flag.String("control-path", "", "control master unix socket path (default ~/.ssh3/cm-<user>@<host>:<port>)")
 	controlPersist := flag.String("control-persist", "no", "keep the master in background after the session ends: no, yes or a number of seconds (idle timeout)")
+	masterMode := flag.Bool("M", false, "control master mode (ssh2 -M; same as -control-master yes)")
+	controlSocket := flag.String("S", "", "control master unix socket path (ssh2 -S; same as -control-path)")
+	identityFile := flag.String("i", "", "selects the private key file for public key authentication (ssh2 -i; same as -privkey)")
+	clientPort := flag.Int("p", 0, "port to connect to on the remote host (ssh2 -p; overrides -o Port, the operand port and ~/.ssh/config)")
 	packetSize := flag.Int("packet-size", 1350, "initial QUIC packet size in bytes")
 	noPKCE := flag.Bool("no-pkce", false, "if set perform PKCE challenge-response with oidc")
-	forwardSSHAgent := flag.Bool("forward-agent", false, "if set, forwards ssh agent to be used with sshv2 connections on the remote host")
-	forwardUDP := flag.String("forward-udp", "", "if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
-	forwardTCP := flag.String("forward-tcp", "", "if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport")
+	proxyJump := flag.String("proxy-jump", "", "if set, performs a proxy jump using the specified remote host as proxy (deprecated alias of -J; requires server with version >= 0.1.5)")
+	jumpDestination := flag.String("J", "", "proxy jump: destination[,destination...] (ssh2 -J; every hop must run ssh3-server)")
+	var localForwardsFlag localForwardFlags
+	flag.Var(&localForwardsFlag, "L", "local forwarding: [bind_address:]port:host:hostport, prefix udp:// for UDP (can be repeated; ssh2 -L shape)")
+	var dynamicForwardsFlag dynamicForwardFlags
+	flag.Var(&dynamicForwardsFlag, "D", "dynamic (SOCKS5) port forwarding: [bind_address:]port (can be repeated; an empty or \"*\" bind address listens on every interface, no address means localhost)")
 	var reverseForwardsFlag reverseForwardFlags
-	flag.Var(&reverseForwardsFlag, "R", "reverse forwarding: [bind_address:]bind_port[/udp]:target_host:target_port, the server binds the port and forwards to the local target (can be repeated)")
-	proxyJump := flag.String("proxy-jump", "", "if set, performs a proxy jump using the specified remote host as proxy (requires server with version >= 0.1.5)")
-	fileTransfer := flag.Bool("f", false, "file transfer mode: ssh3 -f SRC DST, with exactly one operand in the user@host:remote_path form (uploads towards it) and the other one local (downloads from it)")
-	transferPort := flag.Int("P", 443, "file transfer mode: server port for the user@host:remote_path operand")
+	flag.Var(&reverseForwardsFlag, "R", "reverse forwarding: [bind_address:]bind_port[/udp]:target_host:target_port, the server binds the port and forwards to the local target (can be repeated; the ssh2 -R shape without the /udp marker)")
+	transferMode := flag.Bool("transfer", false, "file transfer mode: ssh3 -transfer SRC DST, with exactly one operand in the user@host:remote_path form (uploads towards it) and the other one local (downloads from it)")
+	legacyTransferFlag := flag.Bool("f", false, "retired: the file transfer form moved to -transfer (ssh2 reserves -f for backgrounding)")
+	transferPort := flag.Int("P", 443, "file transfer mode: server port for the user@host:remote_path operand (deprecated alias of -p)")
 	transferURLPath := flag.String("U", "/ssh3-term", "file transfer mode: server URL path for the user@host:remote_path operand")
 	recursive := flag.Bool("r", false, "file transfer mode: transfer directories recursively")
 	resumeMode := flag.Bool("continue", false, "file transfer mode: resume interrupted transfers instead of overwriting")
 	verifyChecksum := flag.Bool("checksum", false, "file transfer mode: verify the transfer with a SHA-256 re-read (automatic for files over 32 MiB)")
-	noSession := flag.Bool("N", false, "do not execute a remote command or session; hold the connection open for the forwards (use with -forward-tcp/-forward-udp)")
+	forwardUDP := flag.String("forward-udp", "", "if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport (deprecated alias of -L udp://)")
+	forwardTCP := flag.String("forward-tcp", "", "if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport (deprecated alias of -L)")
+	noSession := flag.Bool("N", false, "do not execute a remote command or session; hold the connection open for the forwards (use with -L/-D/-R)")
 	configFileFlag := flag.String("F", "", "specifies an alternative per-user configuration file (default ~/.ssh/config)")
-	dynamicForward := flag.String("D", "", "dynamic (SOCKS5) port forwarding: [bind_address:]port (an empty or \"*\" bind address listens on every interface, no address means localhost)")
 	forcePTY := flag.Bool("t", false, "force pseudo-terminal allocation, even when the local standard input is not a terminal")
 	noPTY := flag.Bool("T", false, "disable pseudo-terminal allocation, even for an interactive session (RequestTTY=no)")
 	subsystem := flag.String("s", "", "request a remote subsystem: \"sftp\" opens the interactive SFTP client, any other name requests that subsystem")
+	v4Only := flag.Bool("4", false, "use IPv4 addresses only (ssh2 -4)")
+	v6Only := flag.Bool("6", false, "use IPv6 addresses only (ssh2 -6)")
 
 	var flagValues []*FlagValue
 	cliParsers, err := internal.GetPluginsCLIArgs()
@@ -607,21 +669,45 @@ func ClientMain() int {
 	flag.Parse()
 	args := flag.Args()
 
-	// detect whether -strict-host-key-checking and -s were explicitly set on the
-	// command line: an explicit flag takes precedence over -o and ssh config
+	// detect which flags were explicitly set on the command line: an explicit
+	// flag takes precedence over -o and ssh config (OpenSSH precedence)
 	strictFlagSet := false
 	subsystemFlagSet := false
+	controlMasterFlagSet := false
+	controlPathFlagSet := false
+	controlPersistFlagSet := false
+	clientPortFlagSet := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "strict-host-key-checking" {
+		switch f.Name {
+		case "strict-host-key-checking":
 			strictFlagSet = true
-		}
-		if f.Name == "s" {
+		case "s":
 			subsystemFlagSet = true
+		case "control-master":
+			controlMasterFlagSet = true
+		case "control-path":
+			controlPathFlagSet = true
+		case "control-persist":
+			controlPersistFlagSet = true
+		case "p":
+			clientPortFlagSet = true
 		}
 	})
 
-	if len(reverseForwardsFlag) > 0 && (*controlOp != "" || *controlMaster != "no") {
-		log.Error().Msgf("-R is not compatible with -control-master")
+	// the -f transfer form is retired (§7c item 1): ssh2 scripts passing -f
+	// must fail loudly here instead of silently doing something else; the
+	// ssh2 background mode is a separate future increment
+	if *legacyTransferFlag {
+		fmt.Fprintln(os.Stderr, "the -f file transfer form is retired: use ssh3 -transfer SRC DST (ssh2 reserves -f for backgrounding)")
+		return -1
+	}
+
+	if *v4Only && *v6Only {
+		fmt.Fprintln(os.Stderr, "-4 and -6 are mutually exclusive")
+		return -1
+	}
+	if *clientPort != 0 && (*clientPort < 0 || *clientPort > 0xFFFF) {
+		fmt.Fprintf(os.Stderr, "Bad port '%d'\n", *clientPort)
 		return -1
 	}
 
@@ -632,18 +718,6 @@ func ClientMain() int {
 			log.Error().Msgf("%s", err)
 			return -1
 		}
-	}
-
-	// -D opens a local SOCKS listener: parse the specification now so a bad
-	// value is rejected before a single QUIC packet is sent
-	var dynamicForwardSpecValue dynamicForwardSpec
-	if *dynamicForward != "" {
-		spec, err := parseDynamicForwardSpec(*dynamicForward)
-		if err != nil {
-			log.Error().Msgf("%s", err)
-			return -1
-		}
-		dynamicForwardSpecValue = spec
 	}
 
 	// -s requests a subsystem instead of a shell/command: the subsystem name is
@@ -658,85 +732,27 @@ func ClientMain() int {
 		subsystemName = name
 	}
 
-	if len(reverseForwardsFlag) > 0 && *fileTransfer {
-		fmt.Fprintln(os.Stderr, "-R cannot be combined with -f")
-		return -1
-	}
-
-	if *controlMaster != "no" && *proxyJump != "" {
-		log.Error().Msgf("-control-master is not compatible with -proxy-jump")
-		return -1
-	}
-
-	// ControlMaster fast path (stage 3.5): an explicit -control-path needs no
-	// server-side material (keys, known hosts, cert pools) - a slave only
-	// dials the control socket, so skip the heavy initialization entirely.
-	// The default control path stays on the slow road below: it must be
-	// computed from the full configuration to match the master's exactly.
-	fastCM := runtime.GOOS != "windows" &&
-		os.Getenv(cmDaemonEnv) != "1" &&
-		*controlPathFlag != "" &&
-		(*controlOp != "" || *controlMaster == "yes" || *controlMaster == "auto")
-	if fastCM {
-		cmCtx := context.Background()
-		if *controlOp != "" {
-			opCtx, cancel := context.WithTimeout(cmCtx, 5*time.Second)
-			defer cancel()
-			return runControlOp(opCtx, *controlPathFlag, *controlOp)
-		}
-		if !client.PingMaster(cmCtx, *controlPathFlag) {
-			if err := startDetachedMaster(); err != nil {
-				log.Error().Msgf("could not start the detached control master: %s", err)
-				return -1
-			}
-			if !waitForMaster(cmCtx, *controlPathFlag, 10*time.Second) {
-				log.Error().Msgf("the control master did not start")
-				return -1
-			}
-			if len(args) <= 1 {
-				return 0
-			}
-		}
-		var cmTTY *os.File
-		if f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
-			cmTTY = f
-		}
-		return runSlaveCommand(cmCtx, *controlPathFlag, args[1:], cmTTY)
-	}
-
-	// dereference the tuning keys only after flag.Parse
-	tuning := quicTuning{
-		InitialPacketSize: uint16(*packetSize),
-		StreamRxWindowMiB: *streamRxMiB,
-		ConnRxWindowMiB:   *connRxMiB,
-	}
-	if len(reverseForwardsFlag) > 0 {
-		// the server opens one forwarded channel per accepted -R connection
-		// or UDP peer; the client's default incoming-stream limit (10) would
-		// throttle them well below the server-side cap
-		tuning.MaxIncomingStreams = 128
-	}
-
-	if *displayVersion {
-		fmt.Fprintln(os.Stdout, filepath.Base(os.Args[0]), "version", ssh3.GetCurrentSoftwareVersion())
-		return 0
-	}
-
 	cliOptions := make(map[client_config.OptionName]client_config.Option)
 	// gather the parsed CLI options
 	for _, v := range flagValues {
 		cliOptions[v.pluginOptionName] = v.parsedOption
 	}
 
-	// apply the -o Key=Value overrides: StrictHostKeyChecking is handled
-	// natively, other keywords are routed to the registered option parsers
-	// (the auth plugins' config keywords, e.g. IdentityFile)
+	// apply the -o Key=Value overrides: the ssh2 keywords handled natively
+	// come first, the remaining ones are routed to the registered option
+	// parsers (the auth plugins' config keywords, e.g. IdentityFile)
 	strictOptionValue := ""
 	verifyHostKeyDNSOptionValue := ""
 	verifyHostKeyDNSOptionSet := false
 	requestTTYOption := "" // the -o RequestTTY=... value, empty when unset
 	termTypeOption := ""   // the -o Term=... value, empty when unset
 	escapeCharOption := "" // the -o EscapeChar=... value, empty when unset
+	portOption := uint16(0)
+	userOption := ""
+	proxyJumpOption := ""
+	controlMasterOption := ""
+	controlPathOption := ""
+	controlPersistOption := ""
 	parsersByKeyword := make(map[string]client_config.OptionName)
 	for optionName, parser := range cliParsers {
 		keyword := strings.ToLower(parser.OptionConfigName())
@@ -747,15 +763,15 @@ func ClientMain() int {
 	for _, keyValuePair := range optionOverrides {
 		key, value, _ := strings.Cut(keyValuePair, "=")
 		key = strings.TrimSpace(key)
-		if strings.EqualFold(key, "StrictHostKeyChecking") {
+		switch {
+		case strings.EqualFold(key, "StrictHostKeyChecking"):
 			if _, err := ssh3.ParseStrictHostKeyChecking(value); err != nil {
 				log.Error().Msgf("%s", err)
 				return -1
 			}
 			strictOptionValue = strings.TrimSpace(value)
 			continue
-		}
-		if strings.EqualFold(key, "EscapeChar") {
+		case strings.EqualFold(key, "EscapeChar"):
 			// validated here so a bad -o value is rejected like every other
 			// malformed option, before the connection is set up
 			if _, err := parseEscapeChar(value); err != nil {
@@ -764,10 +780,7 @@ func ClientMain() int {
 			}
 			escapeCharOption = strings.TrimSpace(value)
 			continue
-		}
-		if strings.EqualFold(key, "RequestTTY") {
-			// validated here so a bad -o value is rejected like every other
-			// malformed option, before the connection is set up
+		case strings.EqualFold(key, "RequestTTY"):
 			policy, err := parseRequestTTY(value)
 			if err != nil {
 				log.Error().Msgf("%s", err)
@@ -775,10 +788,7 @@ func ClientMain() int {
 			}
 			requestTTYOption = policy
 			continue
-		}
-		if strings.EqualFold(key, "Term") {
-			// validated here so a bad -o value is rejected like every other
-			// malformed option, before the connection is set up
+		case strings.EqualFold(key, "Term"):
 			term, err := parseTermType(value)
 			if err != nil {
 				log.Error().Msgf("%s", err)
@@ -786,16 +796,73 @@ func ClientMain() int {
 			}
 			termTypeOption = term
 			continue
-		}
-		if strings.EqualFold(key, "VerifyHostKeyDNS") {
-			// validated here so a bad -o value is rejected like every other
-			// unknown or malformed option, before the connection is set up
+		case strings.EqualFold(key, "VerifyHostKeyDNS"):
 			if _, err := parseVerifyHostKeyDNSValue(value); err != nil {
 				log.Error().Msgf("%s", err)
 				return -1
 			}
 			verifyHostKeyDNSOptionValue = strings.TrimSpace(value)
 			verifyHostKeyDNSOptionSet = true
+			continue
+		case strings.EqualFold(key, "Port"):
+			port, err := parsePortKeyword(value)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			portOption = port
+			continue
+		case strings.EqualFold(key, "User"):
+			if strings.TrimSpace(value) == "" {
+				fmt.Fprintln(os.Stderr, "Bad configuration option 'User': the value cannot be empty")
+				return -1
+			}
+			userOption = strings.TrimSpace(value)
+			continue
+		case strings.EqualFold(key, "LocalForward"):
+			if err := localForwardsFlag.Set(value); err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			continue
+		case strings.EqualFold(key, "RemoteForward"):
+			forward, err := parseReverseForwardSpec(value)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			reverseForwardsFlag = append(reverseForwardsFlag, forward)
+			continue
+		case strings.EqualFold(key, "DynamicForward"):
+			if err := dynamicForwardsFlag.Set(value); err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			continue
+		case strings.EqualFold(key, "ProxyJump"):
+			if _, err := parseProxyJumpChain(value); err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			proxyJumpOption = strings.TrimSpace(value)
+			continue
+		case strings.EqualFold(key, "ControlMaster"):
+			policy, err := parseControlMasterPolicy(value)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			controlMasterOption = policy
+			continue
+		case strings.EqualFold(key, "ControlPath"):
+			controlPathOption = strings.TrimSpace(value)
+			continue
+		case strings.EqualFold(key, "ControlPersist"):
+			if _, _, err := parseControlPersistStrict(value); err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			controlPersistOption = strings.TrimSpace(value)
 			continue
 		}
 		if optionName, ok := parsersByKeyword[strings.ToLower(key)]; ok {
@@ -811,15 +878,148 @@ func ClientMain() int {
 		return -1
 	}
 
+	// -i is the ssh2 spelling of the privkey plugin's IdentityFile option
+	if *identityFile != "" {
+		optionName, ok := parsersByKeyword["identityfile"]
+		if !ok {
+			log.Error().Msgf("-i: the privkey authentication plugin providing the IdentityFile option is not available")
+			return -1
+		}
+		option, err := cliParsers[optionName].Parse([]string{*identityFile})
+		if err != nil {
+			log.Error().Msgf("could not parse -i %s: %s", *identityFile, err)
+			return -1
+		}
+		cliOptions[optionName] = option
+	}
+
+	// CLI flag > -o keyword, resolved once so every later use sees the merged
+	// value (OpenSSH precedence; ~/.ssh/config fills what is left empty)
+	controlMasterResolved := "no"
+	if controlMasterOption != "" {
+		controlMasterResolved = controlMasterOption
+	}
+	if controlMasterFlagSet {
+		controlMasterResolved = *controlMaster
+	}
+	if *masterMode {
+		controlMasterResolved = "yes"
+	}
+	controlPathResolved := controlPathOption
+	if controlPathFlagSet {
+		controlPathResolved = *controlPathFlag
+	}
+	if *controlSocket != "" {
+		controlPathResolved = *controlSocket
+	}
+	controlPersistResolved := controlPersistOption
+	if controlPersistFlagSet {
+		controlPersistResolved = *controlPersist
+	}
+	proxyJumpResolved := proxyJumpOption
+	if *proxyJump != "" {
+		proxyJumpResolved = *proxyJump
+	}
+	if *jumpDestination != "" {
+		proxyJumpResolved = *jumpDestination
+	}
+	portOverride := portOption
+	if clientPortFlagSet && *clientPort != 0 {
+		portOverride = uint16(*clientPort)
+	}
+	addressFamily := 0
+	if *v4Only {
+		addressFamily = 4
+	}
+	if *v6Only {
+		addressFamily = 6
+	}
+
+	if proxyJumpResolved != "" {
+		if _, err := parseProxyJumpChain(proxyJumpResolved); err != nil {
+			log.Error().Msgf("%s", err)
+			return -1
+		}
+	}
+	if len(reverseForwardsFlag) > 0 && controlMasterResolved != "no" {
+		log.Error().Msgf("-R is not compatible with -M/-control-master")
+		return -1
+	}
+	if len(reverseForwardsFlag) > 0 && *transferMode {
+		fmt.Fprintln(os.Stderr, "-R cannot be combined with -transfer")
+		return -1
+	}
+	if controlMasterResolved != "no" && proxyJumpResolved != "" {
+		log.Error().Msgf("-M/-control-master is not compatible with -J/-proxy-jump")
+		return -1
+	}
+
+	// ControlMaster fast path (stage 3.5): an explicit control path needs no
+	// server-side material (keys, known hosts, cert pools) - a slave only
+	// dials the control socket, so skip the heavy initialization entirely.
+	// The default control path stays on the slow road below: it must be
+	// computed from the full configuration to match the master's exactly.
+	fastCM := runtime.GOOS != "windows" &&
+		os.Getenv(cmDaemonEnv) != "1" &&
+		controlPathResolved != "" &&
+		(*controlOp != "" || controlMasterResolved == "yes" || controlMasterResolved == "auto")
+	if fastCM {
+		cmCtx := context.Background()
+		if *controlOp != "" {
+			opCtx, cancel := context.WithTimeout(cmCtx, 5*time.Second)
+			defer cancel()
+			return runControlOp(opCtx, controlPathResolved, *controlOp)
+		}
+		if !client.PingMaster(cmCtx, controlPathResolved) {
+			if err := startDetachedMaster(); err != nil {
+				log.Error().Msgf("could not start the detached control master: %s", err)
+				return -1
+			}
+			if !waitForMaster(cmCtx, controlPathResolved, 10*time.Second) {
+				log.Error().Msgf("the control master did not start")
+				return -1
+			}
+			if len(args) <= 1 {
+				return 0
+			}
+		}
+		var cmTTY *os.File
+		if f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
+			cmTTY = f
+		}
+		return runSlaveCommand(cmCtx, controlPathResolved, args[1:], cmTTY)
+	}
+
+	// dereference the tuning keys only after flag.Parse
+	tuning := quicTuning{
+		InitialPacketSize: uint16(*packetSize),
+		StreamRxWindowMiB: *streamRxMiB,
+		ConnRxWindowMiB:   *connRxMiB,
+	}
+	if len(reverseForwardsFlag) > 0 {
+		// the server opens one forwarded channel per accepted -R connection
+		// or UDP peer; the client's default incoming-stream limit (10) would
+		// throttle them well below the server-side cap
+		tuning.MaxIncomingStreams = 128
+	}
+
+	if displayVersionVar {
+		fmt.Fprintln(os.Stdout, filepath.Base(os.Args[0]), "version", ssh3.GetCurrentSoftwareVersion())
+		return 0
+	}
+
 	useOIDC := *issuerUrl != ""
 
 	ssh3Dir := path.Join(homedir(), ".ssh3")
 	os.MkdirAll(ssh3Dir, 0700)
 
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-	if *verbose && os.Getenv("SSH3_LOG_LEVEL") != "trace" {
+	switch {
+	case *quiet && os.Getenv("SSH3_LOG_LEVEL") != "trace":
+		util.ConfigureLogger("error")
+	case *verbose && os.Getenv("SSH3_LOG_LEVEL") != "trace":
 		util.ConfigureLogger("debug")
-	} else {
+	default:
 		util.ConfigureLogger(os.Getenv("SSH3_LOG_LEVEL"))
 	}
 
@@ -865,16 +1065,16 @@ func ClientMain() int {
 	urlFromParam := args[0]
 	command := args[1:]
 
-	if *noSession && *fileTransfer {
-		fmt.Fprintln(os.Stderr, "-N cannot be combined with -f")
+	if *noSession && *transferMode {
+		fmt.Fprintln(os.Stderr, "-N cannot be combined with -transfer")
 		return -1
 	}
 
 	if subsystemName != "" {
 		// a subsystem owns the session channel: it cannot be combined with the
 		// modes that also want it, nor with a remote command to run instead
-		if *fileTransfer {
-			fmt.Fprintln(os.Stderr, "-s cannot be combined with -f")
+		if *transferMode {
+			fmt.Fprintln(os.Stderr, "-s cannot be combined with -transfer")
 			return -1
 		}
 		if *noSession {
@@ -885,13 +1085,19 @@ func ClientMain() int {
 			fmt.Fprintln(os.Stderr, "-s cannot be combined with a remote command")
 			return -1
 		}
-		if *forwardSSHAgent || len(reverseForwardsFlag) > 0 {
-			fmt.Fprintln(os.Stderr, "-s cannot be combined with -forward-agent or -R")
+		if forwardAgentVar || len(reverseForwardsFlag) > 0 {
+			fmt.Fprintln(os.Stderr, "-s cannot be combined with -A/-forward-agent or -R")
 			return -1
 		}
 	}
 
-	if *fileTransfer {
+	// the transfer-mode port: the ssh2 -p wins over the deprecated -P
+	transferDefaultPort := *transferPort
+	if portOverride != 0 {
+		transferDefaultPort = int(portOverride)
+	}
+
+	if *transferMode {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "file transfer mode expects exactly two operands: one user@host:remote_path and one local path")
 			return -1
@@ -899,7 +1105,7 @@ func ClientMain() int {
 		switch {
 		case isRemoteTransferSpec(args[0]) && !isRemoteTransferSpec(args[1]):
 			// remote operand is the source: download to the local path
-			target, _, _, err := parseRemoteTransferSpec(args[0], *transferPort, *transferURLPath)
+			target, _, _, err := parseRemoteTransferSpec(args[0], transferDefaultPort, *transferURLPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s\n", err)
 				return -1
@@ -907,7 +1113,7 @@ func ClientMain() int {
 			fileTransferTarget, fileTransferLocal, fileTransferUpload = target, args[1], false
 		case isRemoteTransferSpec(args[1]) && !isRemoteTransferSpec(args[0]):
 			// remote operand is the destination: upload from the local path
-			target, _, _, err := parseRemoteTransferSpec(args[1], *transferPort, *transferURLPath)
+			target, _, _, err := parseRemoteTransferSpec(args[1], transferDefaultPort, *transferURLPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s\n", err)
 				return -1
@@ -928,57 +1134,34 @@ func ClientMain() int {
 		return -1
 	}
 
-	var localUDPAddr *net.UDPAddr = nil
-	var remoteUDPAddr *net.UDPAddr = nil
-	var localTCPAddr *net.TCPAddr = nil
-	var remoteTCPAddr *net.TCPAddr = nil
+	// the deprecated fork-form forward flags join the ssh2 -L list, parsed
+	// with their historical localport/remoteip@remoteport shape; unlike the
+	// old code, a parse error aborts instead of continuing with nil addresses
 	if *forwardUDP != "" {
 		localPort, remoteIP, remotePort, err := parseAddrPort(*forwardUDP)
 		if err != nil {
 			log.Error().Msgf("UDP forwarding parsing error %s", err)
-		}
-		remoteUDPAddr = &net.UDPAddr{
-			IP:   remoteIP,
-			Port: remotePort,
-		}
-		if remoteIP.To4() != nil {
-			localUDPAddr = &net.UDPAddr{
-				IP:   net.IPv4(127, 0, 0, 1),
-				Port: localPort,
-			}
-		} else if remoteIP.To16() != nil {
-			localUDPAddr = &net.UDPAddr{
-				IP:   net.IPv6loopback,
-				Port: localPort,
-			}
-		} else {
-			log.Error().Msgf("Unrecognized IP length %d", len(remoteIP))
 			return -1
 		}
+		localForwardsFlag = append(localForwardsFlag, localForwardSpec{
+			BindPort:   uint16(localPort),
+			TargetHost: remoteIP.String(),
+			TargetPort: uint16(remotePort),
+			Protocol:   util.SSHProtocolUDP,
+		})
 	}
 	if *forwardTCP != "" {
 		localPort, remoteIP, remotePort, err := parseAddrPort(*forwardTCP)
 		if err != nil {
-			log.Error().Msgf("UDP forwarding parsing error %s", err)
-		}
-		remoteTCPAddr = &net.TCPAddr{
-			IP:   remoteIP,
-			Port: remotePort,
-		}
-		if remoteIP.To4() != nil {
-			localTCPAddr = &net.TCPAddr{
-				IP:   net.IPv4(127, 0, 0, 1),
-				Port: localPort,
-			}
-		} else if remoteIP.To16() != nil {
-			localTCPAddr = &net.TCPAddr{
-				IP:   net.IPv6loopback,
-				Port: localPort,
-			}
-		} else {
-			log.Error().Msgf("Unrecognized IP length %d", len(remoteIP))
+			log.Error().Msgf("TCP forwarding parsing error %s", err)
 			return -1
 		}
+		localForwardsFlag = append(localForwardsFlag, localForwardSpec{
+			BindPort:   uint16(localPort),
+			TargetHost: remoteIP.String(),
+			TargetPort: uint16(remotePort),
+			Protocol:   util.SSHForwardingProtocolTCP,
+		})
 	}
 
 	var sshConfig *matchcfg.Resolver
@@ -1082,7 +1265,7 @@ func ClientMain() int {
 		log.Error().Msgf("Could not get plugins options parsers: %s", err)
 		return -1
 	}
-	agentClient, options, err := getConnectionMaterialFromURL(parsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers)
+	agentClient, options, err := getConnectionMaterialFromURL(parsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers, portOverride, userOption)
 	if err != nil {
 		log.Error().Msgf("Could not get connection material for %s: %s", parsedUrl, err)
 		return -1
@@ -1105,7 +1288,7 @@ func ClientMain() int {
 			}
 		}
 		if v, err := sshConfig.Get(hostname, "ForwardAgent"); err == nil && strings.EqualFold(v, "yes") {
-			*forwardSSHAgent = true
+			forwardAgentVar = true
 		}
 		if v, err := sshConfig.Get(hostname, "RequestTTY"); err == nil && v != "" {
 			policy, policyErr := parseRequestTTY(v)
@@ -1130,11 +1313,11 @@ func ClientMain() int {
 			}
 			escapeCharConfig = v
 		}
-		if *proxyJump == "" {
+		if proxyJumpResolved == "" {
 			if v, err := sshConfig.Get(hostname, "UDPProxyJump"); err == nil && v != "" {
-				*proxyJump = v
+				proxyJumpResolved = v
 			} else if v, err := sshConfig.Get(hostname, "ProxyJump"); err == nil && v != "" {
-				*proxyJump = v
+				proxyJumpResolved = v
 			}
 		}
 	}
@@ -1174,13 +1357,13 @@ func ClientMain() int {
 	if verifyHostKeyDNS.Mode != ssh3.VerifyHostKeyDNSNo {
 		log.Debug().Msgf("VerifyHostKeyDNS=%s", describeVerifyHostKeyDNS(verifyHostKeyDNS))
 	}
-	if (*controlMaster == "yes" || *controlMaster == "auto") && *proxyJump != "" {
-		log.Error().Msgf("-control-master is not compatible with -proxy-jump (from the command line or ~/.ssh/config)")
+	if (controlMasterResolved == "yes" || controlMasterResolved == "auto") && proxyJumpResolved != "" {
+		log.Error().Msgf("-M/-control-master is not compatible with -J/-proxy-jump (from the command line or ~/.ssh/config)")
 		return -1
 	}
 
 	// --- ControlMaster (stage 3.5) ---
-	controlPath := *controlPathFlag
+	controlPath := controlPathResolved
 	if controlPath == "" {
 		controlPath = path.Join(ssh3Dir, fmt.Sprintf("cm-%s@%s:%d", options.Username(), options.Hostname(), options.Port()))
 	}
@@ -1189,14 +1372,14 @@ func ClientMain() int {
 		defer cancel()
 		return runControlOp(opCtx, controlPath, *controlOp)
 	}
-	if *controlMaster == "yes" || *controlMaster == "auto" {
+	if controlMasterResolved == "yes" || controlMasterResolved == "auto" {
 		if runtime.GOOS == "windows" {
 			log.Warn().Msgf("control-master is not supported on windows yet, running a direct session")
 		} else if os.Getenv(cmDaemonEnv) == "1" {
 			// this process is the detached master: connect and serve the
 			// control socket; it never runs sessions itself
-			idleTimeout, _ := parseControlPersist(*controlPersist)
-			qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, nil, nil, tuning)
+			idleTimeout, _ := parseControlPersist(controlPersistResolved)
+			qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, nil, nil, tuning, addressFamily)
 			if qconn == nil {
 				return status
 			}
@@ -1222,7 +1405,7 @@ func ClientMain() int {
 		} else if client.PingMaster(ctx, controlPath) {
 			// a master is already serving: run this invocation as a slave
 			return runSlaveCommand(ctx, controlPath, command, tty)
-		} else if _, ok := parseControlPersist(*controlPersist); ok {
+		} else if _, ok := parseControlPersist(controlPersistResolved); ok {
 			// no master yet: spawn one detached, then run as a slave
 			if err := startDetachedMaster(); err != nil {
 				log.Error().Msgf("could not start the detached control master: %s", err)
@@ -1241,61 +1424,87 @@ func ClientMain() int {
 		// persist cannot outlive this process, run a direct session instead
 	}
 
+	// -J / -proxy-jump: the hop chain tunnels UDP hop by hop, the last hop
+	// towards the final destination. The -p/-o Port and -o User overrides do
+	// not apply to the hops: each -J destination carries its own user@host.
 	var proxyAddress *net.UDPAddr
-	if *proxyJump != "" {
-		if !strings.HasPrefix(*proxyJump, "https://") {
-			*proxyJump = fmt.Sprintf("https://%s", *proxyJump)
-		}
-		proxyParsedUrl, err := url.Parse(*proxyJump)
+	if proxyJumpResolved != "" {
+		hops, err := parseProxyJumpChain(proxyJumpResolved)
 		if err != nil {
-			log.Error().Msgf("Could not parse proxy host URL %s: %s", *proxyJump, err)
+			log.Error().Msgf("%s", err)
 			return -1
 		}
-		proxyAgentClient, proxyOptions, err := getConnectionMaterialFromURL(proxyParsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers)
-		if err != nil {
-			log.Error().Msgf("Could not get connection material for proxy %s: %s", proxyParsedUrl, err)
-			return -1
-		}
-		qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, nil, tty, tuning)
-
-		if qconn == nil {
-			if status != 0 {
-				log.Error().Msgf("could not setup transport for proxy client.")
+		for hopIndex, hop := range hops {
+			hopUrl := hop
+			if !strings.HasPrefix(hopUrl, "https://") {
+				hopUrl = fmt.Sprintf("https://%s", hopUrl)
 			}
-			return status
-		}
+			proxyParsedUrl, err := url.Parse(hopUrl)
+			if err != nil {
+				log.Error().Msgf("Could not parse proxy host URL %s: %s", hopUrl, err)
+				return -1
+			}
+			proxyAgentClient, proxyOptions, err := getConnectionMaterialFromURL(proxyParsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers, 0, "")
+			if err != nil {
+				log.Error().Msgf("Could not get connection material for proxy %s: %s", proxyParsedUrl, err)
+				return -1
+			}
+			qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, proxyAddress, tty, tuning, addressFamily)
 
-		// no EnableDatagrams: ssh3 carries UDP forwarding over the raw QUIC
-		// datagram API, and the HTTP/3 datagram layer would compete with it for
-		// datagrams on the same connection
-		transport := &http3.Transport{}
+			if qconn == nil {
+				if status != 0 {
+					log.Error().Msgf("could not setup transport for proxy hop %s.", hop)
+				}
+				return status
+			}
 
-		proxyClient, err := client.Dial(ctx, proxyOptions, qconn, transport, proxyAgentClient)
-		if err != nil {
-			log.Error().Msgf("could not establish SSH3 proxy conversation: %s", err)
-			return -1
-		}
+			// no EnableDatagrams: ssh3 carries UDP forwarding over the raw QUIC
+			// datagram API, and the HTTP/3 datagram layer would compete with it for
+			// datagrams on the same connection
+			transport := &http3.Transport{}
 
-		baseAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-		if err != nil {
-			log.Error().Msgf("Could not resolve 127.0.0.1:0: %s", err)
-			return -1
+			proxyClient, err := client.Dial(ctx, proxyOptions, qconn, transport, proxyAgentClient)
+			if err != nil {
+				log.Error().Msgf("could not establish SSH3 proxy conversation: %s", err)
+				return -1
+			}
+
+			// each hop tunnels UDP towards the next one; the last hop tunnels
+			// towards the final destination
+			udpTarget := options.URLHostnamePort()
+			if hopIndex+1 < len(hops) {
+				nextUrl := hops[hopIndex+1]
+				if !strings.HasPrefix(nextUrl, "https://") {
+					nextUrl = fmt.Sprintf("https://%s", nextUrl)
+				}
+				nextParsedUrl, err := url.Parse(nextUrl)
+				if err != nil {
+					log.Error().Msgf("Could not parse proxy host URL %s: %s", nextUrl, err)
+					return -1
+				}
+				udpTarget = urlHostPort(nextParsedUrl)
+			}
+			baseAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+			if err != nil {
+				log.Error().Msgf("Could not resolve 127.0.0.1:0: %s", err)
+				return -1
+			}
+			remoteAddr, err := net.ResolveUDPAddr("udp", udpTarget)
+			if err != nil {
+				log.Error().Msgf("Could not resolve remote address %s: %s", udpTarget, err)
+				return -1
+			}
+			addr, err := proxyClient.ForwardUDP(ctx, baseAddr, remoteAddr)
+			if err != nil {
+				log.Error().Msgf("Could not forward UDP for proxy jump: %s", err)
+				return -1
+			}
+			proxyAddress = addr
+			log.Debug().Msgf("proxy hop %d (%s) forwards UDP towards %s", hopIndex+1, hop, udpTarget)
 		}
-		remoteAddr, err := net.ResolveUDPAddr("udp", options.URLHostnamePort())
-		if err != nil {
-			log.Error().Msgf("Could not resolve remote address %s: %s", options.URLHostnamePort(), err)
-			return -1
-		}
-		addr, err := proxyClient.ForwardUDP(ctx, baseAddr, remoteAddr)
-		if err != nil {
-			log.Error().Msgf("Could not forward UDP for proxy jump: %s", err)
-			return -1
-		}
-		proxyAddress = addr
-		log.Debug().Msgf("started proxy jump at %s", proxyAddress)
 	}
 
-	qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, tuning)
+	qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, tuning, addressFamily)
 
 	if qconn == nil {
 		if status != 0 {
@@ -1326,43 +1535,67 @@ func ClientMain() int {
 			}
 		}
 	}
-	if localTCPAddr != nil && remoteTCPAddr != nil {
-		_, err := c.ForwardTCP(ctx, localTCPAddr, remoteTCPAddr)
-		if err != nil {
-			log.Error().Msgf("could not forward UDP: %s", err)
-			return -1
-		}
-	}
-	if localUDPAddr != nil && remoteUDPAddr != nil {
-		_, err := c.ForwardUDP(ctx, localUDPAddr, remoteUDPAddr)
-		if err != nil {
-			log.Error().Msgf("could not forward UDP: %s", err)
-			return -1
+	// -L/-D: the local listeners ride the connection just established. They
+	// only need the SSH3 conversation, so they are set up before any session
+	// channel and stay usable for the whole lifetime of the invocation.
+	for _, forward := range localForwardsFlag {
+		switch forward.Protocol {
+		case util.SSHForwardingProtocolTCP:
+			remoteTCPAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(forward.TargetHost, strconv.Itoa(int(forward.TargetPort))))
+			if err != nil {
+				log.Error().Msgf("could not resolve -L target %s:%d: %s", forward.TargetHost, forward.TargetPort, err)
+				return -1
+			}
+			localTCPAddr, err := localListenTCPAddr(forward, remoteTCPAddr.IP)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			if _, err := c.ForwardTCP(ctx, localTCPAddr, remoteTCPAddr); err != nil {
+				log.Error().Msgf("could not set up local TCP forwarding: %s", err)
+				return -1
+			}
+			log.Debug().Msgf("local TCP forwarding from %s to %s", localTCPAddr, remoteTCPAddr)
+		case util.SSHProtocolUDP:
+			remoteUDPAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(forward.TargetHost, strconv.Itoa(int(forward.TargetPort))))
+			if err != nil {
+				log.Error().Msgf("could not resolve -L UDP target %s:%d: %s", forward.TargetHost, forward.TargetPort, err)
+				return -1
+			}
+			localUDPAddr, err := localListenUDPAddr(forward, remoteUDPAddr.IP)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			if _, err := c.ForwardUDP(ctx, localUDPAddr, remoteUDPAddr); err != nil {
+				log.Error().Msgf("could not set up local UDP forwarding: %s", err)
+				return -1
+			}
+			log.Debug().Msgf("local UDP forwarding from %s to %s", localUDPAddr, remoteUDPAddr)
 		}
 	}
 
-	// -D: open the local SOCKS5 listener over the connection just established.
-	// It only needs the SSH3 conversation, so it is set up before any session
-	// channel and stays usable for the whole lifetime of the invocation.
-	var forwarder *dynamicForwarder
-	if *dynamicForward != "" {
-		forwarder, err = startDynamicForward(ctx, c.Conversation, dynamicForwardSpecValue)
+	// -D: open one local SOCKS5 listener per specification.
+	var dynamicForwarders []*dynamicForwarder
+	for _, spec := range dynamicForwardsFlag {
+		forwarder, err := startDynamicForward(ctx, c.Conversation, spec)
 		if err != nil {
 			log.Error().Msgf("could not set up dynamic forwarding: %s", err)
 			return -1
 		}
+		dynamicForwarders = append(dynamicForwarders, forwarder)
 		defer func() {
 			forwarder.Close()
 			forwarder.Wait()
 		}()
-		if boundPort := dynamicForwardSpecValue.BindPort; boundPort == 0 {
+		if spec.BindPort == 0 {
 			log.Info().Msgf("dynamic SOCKS proxy listening on %s (allocated port)", forwarder.ListenAddr())
 		} else {
 			log.Info().Msgf("dynamic SOCKS proxy listening on %s", forwarder.ListenAddr())
 		}
 	}
 
-	if *fileTransfer {
+	if *transferMode {
 		return runFileTransfer(c, fileTransferTarget, fileTransferLocal, fileTransferUpload, *recursive, *resumeMode, *verifyChecksum)
 	}
 
@@ -1438,7 +1671,7 @@ func ClientMain() int {
 
 	if *noSession {
 		log.Info().Msgf("-N: holding the connection open for the forwards until interrupted")
-		if len(reverseForwardsFlag) > 0 || forwarder != nil {
+		if len(reverseForwardsFlag) > 0 || len(localForwardsFlag) > 0 || len(dynamicForwarders) > 0 {
 			// no session channel to start the dispatch loop implicitly
 			c.StartAcceptLoop()
 		}
@@ -1454,7 +1687,7 @@ func ClientMain() int {
 	// regular session path cannot do: RunSession only allocates one when it
 	// finds a TTY.
 	if *forcePTY || requestTYTPolicy == "force" {
-		err = runForcedPtySession(ctx, c, tty, *forwardSSHAgent, escapeCfg, termType, command...)
+		err = runForcedPtySession(ctx, c, tty, forwardAgentVar, escapeCfg, termType, command...)
 		if errors.Is(err, client.ErrEscapeDisconnect) {
 			return 255
 		}
@@ -1471,7 +1704,7 @@ func ClientMain() int {
 		}
 	}
 
-	err = c.RunSession(tty, *forwardSSHAgent, requestTYTPolicy, termType, escapeCfg, command...)
+	err = c.RunSession(tty, forwardAgentVar, requestTYTPolicy, termType, escapeCfg, command...)
 	if errors.Is(err, client.ErrEscapeDisconnect) {
 		// the user tore the session down with the ~. escape sequence:
 		// the exit code matches a closed connection, as OpenSSH

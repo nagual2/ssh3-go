@@ -198,18 +198,18 @@ ssh3-server -generate-public-cert my-domain.example.org -url-path /ssh3
 Example Go client:
 
 ```bash
-ssh3 -privkey ~/.ssh/id_ed25519 username@my-domain.example.org/ssh3
+ssh3 -i ~/.ssh/id_ed25519 username@my-domain.example.org/ssh3
 ```
 
 For the release server, connect with:
 
 ```bash
-ssh3 max@my-server.example.org/ssh3-term -privkey ~/.ssh/id_ed25519
+ssh3 max@my-server.example.org/ssh3-term -i ~/.ssh/id_ed25519
 ```
 
 ### File transfer
 
-Stage 2 adds an `ssh3 -f` mode over a dedicated SFTP channel (created
+Stage 2 adds an `ssh3 -transfer` mode over a dedicated SFTP channel (created
 files belong to the session user). Path isolation follows the sshd model by
 default (`-sftp-jail chroot`): the server re-execs a short-lived per-session
 child that chroots into the user's home and drops to the user's uid/gid
@@ -221,27 +221,30 @@ server):
 
 ```bash
 # upload a file (remote operand last)
-ssh3 -f ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
+ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
 
 # upload into an existing remote directory, recursively
-ssh3 -f -r ~/project-dir max@my-server.example.org/ssh3-term:backups/
+ssh3 -transfer -r ~/project-dir max@my-server.example.org/ssh3-term:backups/
 
 # download (remote operand first)
-ssh3 -f max@my-server.example.org/ssh3-term:logs/app.log ./app.log
+ssh3 -transfer max@my-server.example.org/ssh3-term:logs/app.log ./app.log
 
 # resume interrupted transfers instead of overwriting
-ssh3 -f --continue big-disk-image.raw max@my-server.example.org/ssh3-term:images/raw
+ssh3 -transfer --continue big-disk-image.raw max@my-server.example.org/ssh3-term:images/raw
 
 # force SHA-256 verification by re-reading the remote file
 # (automatic for transfers over 32 MiB)
-ssh3 -f --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
+ssh3 -transfer --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
 ```
 
 Notes: the port defaults to 443 and the URL path to `/ssh3-term`; override
-them with `-P` and `-U`, or spell the operand as
-`user@host:port/url_path:remote_path`. Non-regular files (symlinks, device
-nodes) are skipped during recursive transfers, and an empty directory is
-created on the other side.
+them with `-p` (the ssh2 form) or `-U`, or spell the operand as
+`user@host:port/url_path:remote_path` (the fork's `-P` still works as a
+deprecated alias of `-p` in transfer mode). Non-regular files (symlinks,
+device nodes) are skipped during recursive transfers, and an empty directory
+is created on the other side. The old `-f` form is retired: ssh2 reserves
+`-f` for backgrounding, so it fails with a pointer to `-transfer` instead of
+transferring.
 
 ## Control master (connection multiplexing)
 
@@ -251,29 +254,31 @@ performs the handshake, later runs reuse it through a Unix socket
 
 ```bash
 # start a persistent master in the background (returns immediately)
-ssh3 -control-master=yes -control-persist=yes user@host
+ssh3 -M -o ControlPersist=yes user@host
 
 # subsequent invocations act as slaves: no new handshake, ~5x faster startup
 ssh3 -control-master=auto user@host 'uptime'
 ssh3 -control-master=auto user@host 'tail -n 5 /var/log/syslog'
-ssh3 -control-master=auto -forward-tcp 8080/127.0.0.1@80 user@host 'sleep 30'
+ssh3 -control-master=auto -L 8080:127.0.0.1:80 user@host 'sleep 30'
 
 # shut the master down
-ssh3 -O exit -control-path ~/.ssh3/cm-user@host:443 user@host
+ssh3 -O exit -S ~/.ssh3/cm-user@host:443 user@host
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `-control-master no\|yes\|auto` | `auto` reuses a running master and starts one if none exists; `yes` always starts one; default `no` |
-| `-control-path PATH` | control socket path; default `~/.ssh3/cm-<user>@<host>:<port>`, permissions 0600 |
-| `-control-persist no\|yes\|<seconds>` | keep the master in the background after sessions end; `yes` = forever, a number = idle timeout |
+| `-M` | master mode (ssh2 `-M`), the same as `-control-master yes` |
+| `-S PATH` | control socket path (ssh2 `-S`), the same as `-control-path PATH` |
+| `-control-master no\|yes\|auto` | `auto` reuses a running master and starts one if none exists; `yes` always starts one; default `no` (also as `-o ControlMaster=…`) |
+| `-control-path PATH` | control socket path; default `~/.ssh3/cm-<user>@<host>:<port>`, permissions 0600 (also as `-o ControlPath=…`) |
+| `-control-persist no\|yes\|<seconds>` | keep the master in the background after sessions end; `yes` = forever, a number = idle timeout (also as `-o ControlPersist=…`) |
 | `-O check\|stop\|exit` | control operation on a running master; the target operand is still needed unless an explicit `-control-path` is given, and an unknown value is rejected up front with the list of supported ones |
 
 Notes: the master is a detached copy of this binary (`SSH3_CM_DAEMON=1`);
 every slave session, TCP/UDP forward and agent forwarding is multiplexed
 over the master's single QUIC connection. The measured median of 100
 sequential execs drops from ~130 ms (cold, one handshake each) to ~24 ms
-(~17%) with exactly one handshake. Limitations: `-proxy-jump` is
+(~17%) with exactly one handshake. Limitations: `-J`/`-proxy-jump` is
 incompatible (mixing it with `-control-master` is an error), Windows is not
 supported. Interactive pty slave sessions relay terminal resizes and
 out-of-band signals through the master. A control socket left behind by a
@@ -315,8 +320,24 @@ support … control operation"* error, so an old peer rejects them fast rather
 than leaving the client waiting.
 
 ## Port forwarding
-Local TCP and UDP forwards run on the client, bridged over the ssh3
-connection (`local_port/remote_ip@remote_port`):
+Local forwards ride the client connection, bridged over ssh3. The primary
+form is the ssh2 `-L [bind_address:]port:host:hostport` shape, repeatable;
+an optional `udp://` prefix selects UDP, which ssh(1) does not have:
+
+```bash
+# ssh2 shape: local 8080 to the server-side dial of 10.0.0.10:80
+ssh3 -L 8080:10.0.0.10:80 user@host
+
+# bind a specific local address; IPv6 literals are bracketed
+ssh3 -L 127.0.0.1:8080:10.0.0.10:80 user@host
+ssh3 -L '[::1]:8080:[::1]:80' user@host
+
+# UDP is a documented ssh3 extension (the udp:// prefix)
+ssh3 -L udp://5353:192.0.2.1:53 user@host
+```
+
+The fork's own `localport/remoteip@remoteport` shape still works as a
+deprecated alias:
 
 ```bash
 ssh3 -forward-tcp 8080/10.0.0.10@80 user@host
@@ -327,7 +348,7 @@ ssh3 -forward-udp 5353/192.0.2.1@53 user@host
 `Ctrl+C` tears it down:
 
 ```bash
-ssh3 -N -forward-tcp 8080/10.0.0.10@80 user@host
+ssh3 -N -L 8080:10.0.0.10:80 user@host
 ```
 
 ### Reverse forwarding (`-R`)
@@ -367,10 +388,11 @@ make the client dial arbitrary local endpoints, and at most 64 forwarded
 channels are open at once per conversation. Closing the control channel or
 the connection releases the bind.
 
-`-R` is rejected at the command line together with `-control-master` and
-`-f`. An older server that does not know the channel closes it without a
-reply, which the client reports as *"the server does not support reverse
-forwarding"* instead of hanging — a server from v0.1.23 or newer is required.
+`-R` is rejected at the command line together with `-M`/`-control-master`
+and `-transfer`. An older server that does not know the channel closes it
+without a reply, which the client reports as *"the server does not support
+reverse forwarding"* instead of hanging — a server from v0.1.23 or newer is
+required.
 
 ### Dynamic SOCKS forwarding (`-D`)
 
@@ -423,6 +445,44 @@ most 64 `dynamic-forward-tcp` channels are bridged at once per conversation,
 and closing the control channel or the conversation tears down every live
 bridge. Both halves are in the unreleased tree, so `-D` needs a server built
 from this source.
+
+## OpenSSH-compatible options (ssh2 parity)
+
+Where the functionality matches, the launch keys follow ssh(1)/sshd(8) —
+scripts written for OpenSSH and for the sibling C implementation behave the
+same against this client (CLI-parity wave, CTO_TASK §7c). The fork's own
+forms stay as deprecated aliases: existing installs and scripts keep
+working.
+
+| ssh2 form | Meaning | Deprecated fork alias |
+|---|---|---|
+| `-i FILE` | private key for public-key authentication | `-privkey FILE` |
+| `-V` | print the version and exit | `-version` |
+| `-A` | forward the SSH agent | `-forward-agent` |
+| `-J DEST[,DEST...]` | proxy jump; every hop must run ssh3-server | `-proxy-jump URL` (single hop) |
+| `-L [BIND:]PORT:HOST:PORT` | local forward, repeatable; a `udp://` prefix selects UDP | `-forward-tcp/-forward-udp LOCAL/REMOTE@PORT` |
+| `-M` / `-S PATH` | control master mode / control socket | `-control-master yes` / `-control-path PATH` |
+| `-p PORT` | remote port (also in transfer mode) | `-P PORT` (transfer mode only) |
+| `-q` | quiet: suppress diagnostics, keep errors | — |
+| `-4` / `-6` | force the address family | — |
+| `-transfer SRC DST` | file transfer mode | `-f` (retired: ssh2 reserves `-f` for backgrounding; it fails with a pointer to `-transfer`) |
+
+Server (sshd(8) canon): `-h KEY` = host key (alias of `-key`), `-c CERT` =
+host certificate (alias of `-cert`), `-p PORT` = listen port (overrides the
+`-bind` port, which stays for the QUIC bind address), `-V` = version.
+
+`-o` keywords added on the ssh_config model: `Port`, `User`,
+`IdentityFile`, `LocalForward`, `RemoteForward`, `DynamicForward`,
+`ProxyJump`, `ControlMaster`, `ControlPath`, `ControlPersist` (alongside the
+existing `StrictHostKeyChecking`, `EscapeChar`, `RequestTTY`, `Term`,
+`VerifyHostKeyDNS`). Precedence: CLI flag > `-o` > `~/.ssh/config`.
+
+Behavioral timeouts follow the sshd canon: an idle session is not killed
+(the `ClientAliveInterval=0` shape — the default idle timeout is 24 h on
+both endpoints, tunable with `-max-idle-timeout`), and the handshake gets
+the `LoginGraceTime` scale (120 s, tunable with `-handshake-idle-timeout`).
+The root account refuses password authentication unconditionally (the
+`PermitRootLogin prohibit-password` analog): root authenticates by key only.
 
 ## Familiar ssh(1) flags
 ### Forced pseudo-terminal (`-t`)
