@@ -261,6 +261,24 @@ Canon decision (the maintainer, 2026-10-17): **where the functionality matches, 
 
 DoD: every ssh2-shaped invocation of the table works against the fork binaries; every old invocation keeps working through the alias layer (regression-tested); `go test ./...` green; README en/ru/de documents the ssh2 forms as primary, the fork forms as aliases.
 
+Status 2026-10-17 (implementation session, Go side): rows 1–11 and 13 **done**, row 12 **open** (maintainer decision pending).
+
+- Row 1 — **done 2026-10-17**: the transfer mode moved to the long form `-transfer`; `-f` is retired with a loud error pointing at `-transfer` (the "removed, decided and documented" variant — the ssh2 background semantics stays a separate future increment, since real `-f` needs auth-before-background). Documented in README en/ru/de.
+- Row 2 — **done**: `-i` routes through the privkey plugin's `IdentityFile` option.
+- Row 3 — **done**: `-V` on the client and the server (alias of `-version`).
+- Row 4 — **done**: `-A` (alias of `-forward-agent`).
+- Row 5 — **done**: `-J destination[,destination...]` — comma chains are real multi-hop: each hop tunnels UDP towards the next, the last towards the destination; `-proxy-jump` stays as the single-hop alias. `-p`/`-o Port`/`-o User` deliberately do not apply to hops (each `-J` destination carries its own user@host).
+- Row 6 — **done**: `-L [bind_address:]port:host:hostport`, repeatable, with the `udp://` prefix as the documented UDP extension; the deprecated `-forward-tcp/-forward-udp` shapes map onto the same forward list (and a parse error there now aborts instead of continuing with nil addresses); `-R` already parsed the ssh(1) TCP shape — pinned by `TestReverseForwardAcceptsSSH2Shape`.
+- Row 7 — **done**: `-M`, `-S path`, `-o ControlMaster=/ControlPath=/ControlPersist=`; precedence CLI flag > `-o` > config.
+- Row 8 — **done**: `-q`, `-4`/`-6` (family-checked against the resolved peer address), `-o Port/User/IdentityFile/LocalForward/RemoteForward/DynamicForward/ProxyJump`; precedence CLI > `-o` > `~/.ssh/config`.
+- Row 9 — **done**: `-h priv.key` / `-c cert.pem`; giving both forms of the same knob is an error, not a silent last-one-wins.
+- Row 10 — **done**: `-p port` merges into `-bind` (bracketed IPv6 handled; a bare unbracketed IPv6 `-bind` is refused as ambiguous rather than guessed).
+- Row 11 — **done, the large-default variant**: idle 30 s → 24 h on **both** endpoints (QUIC negotiates the smaller of the two, so the client raises its side too; quic-go maps 0 to its 30 s default, so "unset" is expressed as a large value) and handshake 5 s → 120 s (the `LoginGraceTime` scale), client setup included. The probe form was not needed: the client already sends 1 s QUIC keepalives (`ServerAliveInterval`-tunable).
+- Row 12 — **open**: Go keeps the default cap of 10 per user (the conservative side) until the maintainer picks the canonical default for both implementations; no code change in this wave.
+- Row 13 — **done**: the root gate (`server_auth.PasswordLoginRefused`) refuses root password auth in both Basic-auth handlers before the backend is consulted; the password-on default was already the sshd canon, and the deployed env file was corrected on the target host on 2026-10-17.
+
+DoD verification: `go test ./...` green (WSL, full uncached pass, 13 packages); new tests `cmd/ssh2_parity_test.go` (ssh2 shapes for -L/-J/-o/-p/-mergeBindPort/aliases) and `server_auth/root_gate_test.go`; README en/ru/de rewritten where the old forms were primary; CHANGELOG `Unreleased` entry.
+
 ## 8. Non-goals
 
 - Do not chase X11 forwarding or interactive agent features before Stage 3 is done.
