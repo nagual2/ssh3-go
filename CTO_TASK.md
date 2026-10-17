@@ -108,11 +108,11 @@ Increments (measurement-driven; re-run B1/B2 after each):
 Non-goal: kernel TLS / crypto offload (impossible for QUIC). For no-AES-NI
 targets (Atom), evaluate ChaCha20-Poly1305 cipher agreement instead.
 
-**Pilot decision 2026-10-03:** the ≥250 MB/s throughput target is no longer
+**maintainer decision 2026-10-03:** the ≥250 MB/s throughput target is no longer
 chased — it is unreachable by small means against quic-go's userspace pipeline
 and OpenSSH's kernel-adjacent path. Priorities are functionality, reliability
 and minimal command latency (the fork is used as an MCP transport). The bulk
-throughput gap is the reason `project/ssh3-c` (C17 rewrite) exists. Delivered
+throughput gap is the reason `ssh3-c` (C17 rewrite) exists. Delivered
 instead (2026-10-04): exec-latency pass — server teardown yield removed, master
 wait poll tightened, cold one-shot exec median 140→26 ms on loopback
 (`bench/exec-latency.sh`).
@@ -173,8 +173,8 @@ per-exec time ≤ 30% of the cold path; without: 100 handshakes. No new dependen
 
 ## 7a. Кросс-имплементационная матрица с ssh3-c: Go-сторона — P2, добавлено 2026-10-05
 
-Контекст. Матрица C-порта (`project/ssh3-c/interop/run-h3.sh`, 23 сценария) гоняет
-Go-сторону через харнес `s3interop` — модуль `project/ssh3-c/interop/quic-go/`
+Контекст. Матрица C-порта (`ssh3-c/interop/run-h3.sh`, 23 сценария) гоняет
+Go-сторону через харнес `s3interop` — модуль `ssh3-c/interop/quic-go/`
 (отдельный go.mod `module s3interop`, только quic-go, сам форк он не импортирует).
 В харнесе два пробела: нет UDP-форвардинга и нет pty/resize, поэтому направления
 «Go-клиент → C-сервер» по этим фичам не покрыты. У форка собственный CLI умеет и то
@@ -185,13 +185,13 @@ docs/FORWARDING-TESTPLAN.md — PASS, но только против Go-серв
 
 ### 7a.1 `-fwd-udp` в харнесе + сценарий 24
 
-- Файл: `project/ssh3-c/interop/quic-go/main.go`. Режим `-h3-forward-client` сегодня
+- Файл: `ssh3-c/interop/quic-go/main.go`. Режим `-h3-forward-client` сегодня
   умеет только `-fwd-tcp localport/remoteip@remoteport`; добавить симметричный
   `-fwd-udp localport/remoteip@remoteport`: локальный UDP listener, датаграммы →
   датаграммы канала к C-серверу, обратно — эхо-сверка.
 - Wire со стороны C-сервера: direct-udp (датаграммы с префиксом
   controlStreamID|channelID); эталон формата — C-клиент
-  `project/ssh3-c/interop/interop_client.c` (режим `-F udp=@port`).
+  `ssh3-c/interop/interop_client.c` (режим `-F udp=@port`).
 - Приёмка: сценарий 24 в `interop/run-h3.sh` («quic-go forward-client -fwd-udp →
   C server», 20 датаграмм с эхо-сверкой — как C-сценарий 13), полный прогон матрицы
   завершается `INTEROP-MATRIX OK`, счётчик сценариев 24.
@@ -241,11 +241,11 @@ TTY/терминальный паритет с OpenSSH. Базовый PTY (open
 
 ## 7c. CLI-parity with OpenSSH (ssh2) — P1, added 2026-10-17
 
-Canon decision (the Pilot, 2026-10-17): **where the functionality matches, the launch keys follow ssh(1)/sshd(8)** — not the fork's own shapes. The full deviation matrix of both implementations (this fork and `project/ssh3-c`) against ssh(1)/sshd(8), including the hard conflicts, lives in `project/ssh3-c/docs/CLI-COMPAT.md` (mirrored as P8(1a)–(1c) of the ssh3-c plan). Rule of the wave: old fork forms stay as deprecated aliases — live installs and existing scripts keep working.
+Canon decision (the maintainer, 2026-10-17): **where the functionality matches, the launch keys follow ssh(1)/sshd(8)** — not the fork's own shapes. The full deviation matrix of both implementations (this fork and `ssh3-c`) against ssh(1)/sshd(8), including the hard conflicts, lives in `the ssh3-c docs` (mirrored as P8(1a)–(1c) of the ssh3-c plan). Rule of the wave: old fork forms stay as deprecated aliases — live installs and existing scripts keep working.
 
 | # | Item (Go side) | From → to (ssh2 canon) | Acceptance |
 |---|----------------|------------------------|------------|
-| 1 | Hard conflict `-f` | ssh2 `-f` = background the process to the background; the transfer mode moves to a new home (a Pilot decision per key: subcommand or long form) | transfer keeps working through the new/aliased form; `ssh3 -f` either means background per ssh(1) or is removed, decided and documented |
+| 1 | Hard conflict `-f` | ssh2 `-f` = background the process to the background; the transfer mode moves to a new home (a maintainer decision per key: subcommand or long form) | transfer keeps working through the new/aliased form; `ssh3 -f` either means background per ssh(1) or is removed, decided and documented |
 | 2 | Identity flag | `-privkey` → add `-i` (sshd/ssh canon; `ssh3-c` already has `-i`) | `-i key` authenticates exactly like `-privkey key` |
 | 3 | Version flag | `-version` → add `-V` (client; server too) | `-V` prints the version and exits 0 |
 | 4 | Agent forwarding | `-forward-agent` → add `-A` (ssh(1); `-X` stays reserved for X11 semantics) | `-A` bridges the agent like the current `-forward-agent` |
@@ -255,6 +255,9 @@ Canon decision (the Pilot, 2026-10-17): **where the functionality matches, the l
 | 8 | Missing ssh2 keys | add `-q`, `-4/-6`; extend `-o` (Port, User, IdentityFile, LocalForward, RemoteForward, DynamicForward, ProxyJump — EscapeChar is done §7b) | each key unit-tested; precedence CLI > `-o` > `~/.ssh/config` |
 | 9 | Server host key/cert | `-key` → add `-h` (sshd canon), `-cert` → add `-c` (coincides with sshd `-c` host certificate) | `-h priv.key -c cert.pem` starts the daemon |
 | 10 | Server port | `-bind [::]:443` → add `-p port` (sshd canon; the bind address stays project-specific — QUIC needs it) | `-p 8443` serves on :8443 |
+| 11 | Behavioral timeouts | idle: `-max-idle-timeout` default 30 s → the ssh2 canon "do not kill the idle" (sshd `ClientAliveInterval=0`): a large default (day scale) **or** ClientAliveInterval-style keepalive probes (an interval + a count, the drop after CountMax missed probes); handshake: 5 s (the quic-go default) → the `LoginGraceTime` scale (120 s); client setup: 5 s → `ConnectTimeout`-unset semantics. quic-go does not accept a zero `MaxIdleTimeout` (0 → its 30 s default) — a large value or probe-keepalive is the only path; the ssh3-c values (60 s idle, 30 s handshake/setup) align in the same wave (the ssh3-c plan P8(1d)) | an idle interactive session survives ≥24 h like an ssh2 session; if the probe form is chosen — the drop happens only after CountMax missed probes |
+| 12 | Reverse-forward cap | `-max-reverse-forwards` default 10 per user vs ssh3-c `0` (no cap; a per-conversation budget of 10) — a maintainer decision which default is canonical, then both align (no sshd equivalent: PermitListen only filters binds) | the default matches the decision; the interop matrix covers both values |
+| 13 | Password default — the sshd canon | the maintainer's decision 2026-10-17 ("as in ssh2"): keep `enablePasswordLogin := true` on builds with the backend (already the case — the `PasswordAuthentication yes` analog); add the sshd pair `PermitRootLogin prohibit-password`: root via password is always refused, root via a key is allowed (no root gate exists today); the deb env-template is already correct in the repo — the stale deployed copy on the target host was corrected 2026-10-17; the brute-force barrier stays (`-max-password-failures` 10 / `-password-lockout-seconds` 60) | a fresh install accepts the user's system password like sshd does; root+password is refused, root+key works; the deployed env file matches the code |
 
 DoD: every ssh2-shaped invocation of the table works against the fork binaries; every old invocation keeps working through the alias layer (regression-tested); `go test ./...` green; README en/ru/de documents the ssh2 forms as primary, the fork forms as aliases.
 

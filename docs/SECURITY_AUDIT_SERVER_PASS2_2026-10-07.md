@@ -6,7 +6,7 @@
 **Predecessor:** `docs/SECURITY_AUDIT_2026-10-06.md` (pass 1, PR #2), audited `00c2f46` / `v0.1.26`.
 **Scope:** the ssh3 **Go server** end to end — `cmd/ssh3-server.go` (accept loop, conversation lifecycle, session exec/PTY/signals, drain/shutdown, logging), `server.go` / `channel.go` / `conversation.go` (channel + request handling, ordering, ID validation, per-conversation limits), `server_auth/` and the auth plugins (pubkey, OIDC/JWT bearer, password backend, unauthenticated cap), `util/unix_util`, `cmd/sftp_subsystem.go` + the new `cmd/internal_sftp.go`, server-side forwarding (`cmd/forward_policy.go`, `cmd/dynamic_forward_server.go`, `cmd/reverse_forward_server.go`), server-side message/util parsing, and the timeout/resource-exhaustion posture.
 **Method:** line-by-line source review at the revision above; `git grep` sweeps (panic/recover/dial/chroot/exec/channel types); a diff-level review of the v0.1.26→v0.1.27 remediation series; cheap local dynamic probes with a recovered `go1.26.0` toolchain (read-only, no live attacks, no third-party system contacted).
-**Out of scope:** fixing anything (recommendations only); Windows-specific files; packaging/release scripts and CI; `internal/interop` harnesses; the C17 (`project/ssh3-c`) tree; the internals of the deliberate `vendor/h3` patch (reviewed only where it meets the server boundary); Rust `crates/` beyond the dependency-version check noted below.
+**Out of scope:** fixing anything (recommendations only); Windows-specific files; packaging/release scripts and CI; `internal/interop` harnesses; the C17 (`ssh3-c`) tree; the internals of the deliberate `vendor/h3` patch (reviewed only where it meets the server boundary); Rust `crates/` beyond the dependency-version check noted below.
 
 > Report-only: **no code was changed anywhere**. Every recommendation below is a proposal.
 
@@ -187,7 +187,7 @@ Checked specifically; "clean" means the code holds up for the stated reason.
 
 **Not reviewed** (stated rather than padded)
 
-- **Windows-specific files** and the Windows build path; **packaging/goreleaser/CI**; `internal/interop` harnesses; `bench/`; the C17 `project/ssh3-c` tree; the internals of `vendor/h3` (only the server-boundary facts were checked).
+- **Windows-specific files** and the Windows build path; **packaging/goreleaser/CI**; `internal/interop` harnesses; `bench/`; the C17 `ssh3-c` tree; the internals of `vendor/h3` (only the server-boundary facts were checked).
 - **Rust `crates/`**: only the `rustls` version was checked (F-10). The Rust server crate's own logic, its `unsafe` blocks and its `crypt(3)` FFI were *not* re-triaged in this pass — pass 1's statistics and its recommendation (fuzz the shadow parser) stand.
 - **The client side** was touched only where the server's behaviour needs it (channel-type names, `-L` emission). I did **not** locate the client helper that opens a server-side forwarding channel, so S2-03's "which type does the CLI actually send for `-L`" is left unverified; the server-side facts in that finding stand on their own.
 - **No fuzzing campaign and no end-to-end dynamic run.** The dynamic probes were limited to building the relevant packages with the recovered `go1.26.0` toolchain and running the repo's own `util`/`message` tests (including the `FuzzParseSSHString` target for a short window); see the appendix for exactly what was executed and its result. No server was started, no QUIC peer was faked, and no third-party system was contacted.

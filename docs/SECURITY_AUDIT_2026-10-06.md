@@ -5,7 +5,7 @@
 **Auditor:** engineering agent (report-only engagement; no code was changed)
 **Scope:** the Go implementation (`cmd/`, `client/`, `client_auth.go`, `server.go`, `conversation.go`, `channel.go`, `server_auth/`, `auth/`, `message/`, `util/`, forwarding, config parsing, host-key verification, logging) plus a review of the Rust workspace (`crates/`) and the dependency graph at the same revision.
 **Method:** manual source review, reachability/call-graph analysis, `git grep` sweeps for panic/unsafe/unwrap surfaces, Go/Rust dependency advisory lookups (OSV), and local read-only dynamic probes where tooling allowed. No dynamic exploitation of any live system; no third-party system was contacted.
-**Out of scope:** fixing anything (recommendations only), the C17 rewrite under `project/ssh3-c`, and the internals of the deliberate `vendor/h3` patch (reviewed only where it meets the Go/Rust boundary).
+**Out of scope:** fixing anything (recommendations only), the C17 rewrite under `ssh3-c`, and the internals of the deliberate `vendor/h3` patch (reviewed only where it meets the Go/Rust boundary).
 
 > This audit was time-boxed. Sections reflect exactly what was covered; see **Coverage** and **Limitations** before treating any absence of findings as a clean bill of health.
 
