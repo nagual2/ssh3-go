@@ -241,9 +241,9 @@ Hinweise: Standardport 443, URL-Pfad `/ssh3-term`; überschreibbar mit `-p`
 `user@host:port/url_path:remote_path` (das Fork-eigene `-P` gilt im
 Übertragungsmodus als veralteter Alias von `-p`). Unreguläre Dateien
 (Symlinks, Geräte) werden bei rekursiven Übertragungen übersprungen, ein
-leeres Verzeichnis wird auf der Gegenseite angelegt. Die alte Form `-f` ist
-eingestellt: ssh2 reserviert `-f` für das Backgrounding, daher bricht sie
-mit einem Verweis auf `-transfer` ab.
+leeres Verzeichnis wird auf der Gegenseite angelegt. Die alte Fork-eigene
+Übertragungsform `-f` ist eingestellt — das Flag bedeutet jetzt das
+ssh2-Backgrounding (Paritätstabelle oben).
 
 ## Control Master (Verbindungsmultiplexing)
 
@@ -478,7 +478,8 @@ Installationen und Skripte funktionieren weiter.
 | `-p PORT` | Remote-Port (auch im Übertragungsmodus) | `-P PORT` (nur Übertragungsmodus) |
 | `-q` | still: Diagnosen unterdrückt, Fehler bleiben | — |
 | `-4` / `-6` | Adressfamilie erzwingen | — |
-| `-transfer SRC DST` | Dateiübertragungsmodus | `-f` (eingestellt: ssh2 reserviert `-f`; bricht mit Verweis auf `-transfer` ab) |
+| `-f` | nach dem Start in den Hintergrund (ssh2 `-f`): die Sitzung löst sich vom Terminal und läuft weiter; nur nicht-interaktive Authentifizierung (Schlüssel/Agent), ein ungepinnter Host unter der Ask-Politik wird vorab abgelehnt; kombinierbar mit Befehl, `-N` oder Weiterleitungen (`-L/-D/-R`); auf Windows nicht verfügbar (läuft mit Warnung im Vordergrund) | — |
+| `-transfer SRC DST` | Dateiübertragungsmodus | die Fork-eigene Übertragungsform `-f` ist eingestellt (das Flag bedeutet jetzt das ssh2-Backgrounding) |
 
 Server (sshd(8)-Kanon): `-h SCHLÜSSEL` = Host-Key (Alias von `-key`),
 `-c ZERT` = Host-Zertifikat (Alias von `-cert`), `-p PORT` = Listen-Port

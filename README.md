@@ -242,9 +242,8 @@ them with `-p` (the ssh2 form) or `-U`, or spell the operand as
 `user@host:port/url_path:remote_path` (the fork's `-P` still works as a
 deprecated alias of `-p` in transfer mode). Non-regular files (symlinks,
 device nodes) are skipped during recursive transfers, and an empty directory
-is created on the other side. The old `-f` form is retired: ssh2 reserves
-`-f` for backgrounding, so it fails with a pointer to `-transfer` instead of
-transferring.
+is created on the other side. The old `-f` transfer form is retired — the
+flag means the ssh2 backgrounding now (the parity table above).
 
 ## Control master (connection multiplexing)
 
@@ -465,7 +464,8 @@ working.
 | `-p PORT` | remote port (also in transfer mode) | `-P PORT` (transfer mode only) |
 | `-q` | quiet: suppress diagnostics, keep errors | — |
 | `-4` / `-6` | force the address family | — |
-| `-transfer SRC DST` | file transfer mode | `-f` (retired: ssh2 reserves `-f` for backgrounding; it fails with a pointer to `-transfer`) |
+| `-f` | go to background after startup (ssh2 `-f`): the session detaches from the terminal and keeps running; non-interactive authentication only (key/agent), and an unpinned host under the default ask policy is refused up front; combine with a command, `-N` or forwards (`-L/-D/-R`); unavailable on Windows (runs in the foreground with a warning) | — |
+| `-transfer SRC DST` | file transfer mode | the fork's own `-f` transfer form is retired (the flag means the ssh2 background now) |
 
 Server (sshd(8) canon): `-h KEY` = host key (alias of `-key`), `-c CERT` =
 host certificate (alias of `-cert`), `-p PORT` = listen port (overrides the

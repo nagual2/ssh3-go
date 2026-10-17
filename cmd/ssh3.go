@@ -637,7 +637,7 @@ func ClientMain() int {
 	var reverseForwardsFlag reverseForwardFlags
 	flag.Var(&reverseForwardsFlag, "R", "reverse forwarding: [bind_address:]bind_port[/udp]:target_host:target_port, the server binds the port and forwards to the local target (can be repeated; the ssh2 -R shape without the /udp marker)")
 	transferMode := flag.Bool("transfer", false, "file transfer mode: ssh3 -transfer SRC DST, with exactly one operand in the user@host:remote_path form (uploads towards it) and the other one local (downloads from it)")
-	legacyTransferFlag := flag.Bool("f", false, "retired: the file transfer form moved to -transfer (ssh2 reserves -f for backgrounding)")
+	backgroundFlag := flag.Bool("f", false, "go to background after startup (ssh2 -f): the session detaches from the terminal and keeps running; non-interactive authentication only (key/agent), and the host must be pinned under the ask policy")
 	transferPort := flag.Int("P", 443, "file transfer mode: server port for the user@host:remote_path operand (deprecated alias of -p)")
 	transferURLPath := flag.String("U", "/ssh3-term", "file transfer mode: server URL path for the user@host:remote_path operand")
 	recursive := flag.Bool("r", false, "file transfer mode: transfer directories recursively")
@@ -693,14 +693,6 @@ func ClientMain() int {
 			clientPortFlagSet = true
 		}
 	})
-
-	// the -f transfer form is retired (§7c item 1): ssh2 scripts passing -f
-	// must fail loudly here instead of silently doing something else; the
-	// ssh2 background mode is a separate future increment
-	if *legacyTransferFlag {
-		fmt.Fprintln(os.Stderr, "the -f file transfer form is retired: use ssh3 -transfer SRC DST (ssh2 reserves -f for backgrounding)")
-		return -1
-	}
 
 	if *v4Only && *v6Only {
 		fmt.Fprintln(os.Stderr, "-4 and -6 are mutually exclusive")
@@ -1360,6 +1352,40 @@ func ClientMain() int {
 	if (controlMasterResolved == "yes" || controlMasterResolved == "auto") && proxyJumpResolved != "" {
 		log.Error().Msgf("-M/-control-master is not compatible with -J/-proxy-jump (from the command line or ~/.ssh/config)")
 		return -1
+	}
+
+	// The ssh2 `-f` background form: re-exec a detached child that runs the
+	// full startup itself (the Go runtime cannot fork an established
+	// connection). Every refusal happens here, in the parent — the child has
+	// no terminal and would die silently instead of reporting. Windows stays
+	// in the foreground like the control master.
+	if *backgroundFlag && os.Getenv(backgroundEnv) != "1" {
+		if !backgroundSupportedOnOS() {
+			log.Warn().Msgf("-f: backgrounding is unavailable on windows, running the session in the foreground")
+		} else {
+			_, pinned := knownHosts[options.CanonicalHostFormat()]
+			bgErr := validateBackgroundMode(backgroundOptions{
+				PasswordAuth:  *passwordAuthentication,
+				OIDC:          useOIDC,
+				ControlMaster: controlMasterResolved,
+				Strict:        strictHostKeyChecking,
+				HostPinned:    pinned,
+				HasCommand:    len(command) > 0,
+				NoSession:     *noSession,
+				HasForwards:   len(localForwardsFlag) > 0 || len(dynamicForwardsFlag) > 0 || len(reverseForwardsFlag) > 0 || *transferMode,
+			})
+			if bgErr != nil {
+				log.Error().Msgf("%s", bgErr)
+				return -1
+			}
+			pid, err := startDetached(backgroundEnv)
+			if err != nil {
+				log.Error().Msgf("-f: could not start the background session: %s", err)
+				return -1
+			}
+			log.Info().Msgf("-f: the session continues in the background (pid %d)", pid)
+			return 0
+		}
 	}
 
 	// --- ControlMaster (stage 3.5) ---

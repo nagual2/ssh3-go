@@ -79,18 +79,29 @@ func parseControlPersist(value string) (time.Duration, bool) {
 	return persist, ok
 }
 
-// startDetachedMaster re-executes this binary detached, with the daemon env
-// marker; the child connects and serves the control socket.
-func startDetachedMaster() error {
+// startDetached re-executes this binary detached with the given environment
+// marker (the daemon dance: no terminal, own process group on unix) and
+// returns the child pid. The marker tells the child which background role it
+// plays; the child runs its full startup itself, because an established
+// connection cannot cross a process boundary in Go.
+func startDetached(envKey string) (int, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	cmd := exec.Command(self, os.Args[1:]...)
-	cmd.Env = append(os.Environ(), cmDaemonEnv+"=1")
+	cmd.Env = append(os.Environ(), envKey+"=1")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = daemonSysProcAttr()
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	return cmd.Process.Pid, nil
+}
+
+func startDetachedMaster() error {
+	_, err := startDetached(cmDaemonEnv)
+	return err
 }
 
 // runSlaveCommand runs one session through the control master with the
