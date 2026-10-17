@@ -239,6 +239,25 @@ TTY/терминальный паритет с OpenSSH. Базовый PTY (open
 | 4 | exit-signal вместо 255 — **done 2026-10-05** (сервер: `signalExit` поверх WaitStatus → `98 exit-signal` с wire-именем и core-dump; клиент: `exitCodeForExitSignal` = 128+signum, неизвестное имя → 255). Живая проверка: `kill -SEGV $$` → rc 139, `kill -TERM $$` → rc 143, `true` → rc 0; совместимость с v0.1.25 не ломается — pump и на старых клиентах трактует exit-signal как терминальное событие |
 | 5 | EscapeChar — **done 2026-10-05** (`client/escape.go` — конечный автомат фильтра stdin-насоса, TDD 11 тестов, устойчив к разрыву последовательности между чтениями; `~.` — чистый teardown с rc 255, `~^Z` — restore терминала + SIGTSTP + raw на resume (unix), `~~` — литеральный `~`, неизвестное — литерально; `-o EscapeChar=<символ|^X|none>` + ключ в `~/.ssh/config`, дефолт `~`; фильтр активен только в pty-сессиях — exec-трафик байт-точен). Живая проверка: `~.` → rc 255; текст с `~` не в начале строки проходит; `EscapeChar=none` отключает |
 
+## 7c. CLI-parity with OpenSSH (ssh2) — P1, added 2026-10-17
+
+Canon decision (the Pilot, 2026-10-17): **where the functionality matches, the launch keys follow ssh(1)/sshd(8)** — not the fork's own shapes. The full deviation matrix of both implementations (this fork and `project/ssh3-c`) against ssh(1)/sshd(8), including the hard conflicts, lives in `project/ssh3-c/docs/CLI-COMPAT.md` (mirrored as P8(1a)–(1c) of the ssh3-c plan). Rule of the wave: old fork forms stay as deprecated aliases — live installs and existing scripts keep working.
+
+| # | Item (Go side) | From → to (ssh2 canon) | Acceptance |
+|---|----------------|------------------------|------------|
+| 1 | Hard conflict `-f` | ssh2 `-f` = background the process to the background; the transfer mode moves to a new home (a Pilot decision per key: subcommand or long form) | transfer keeps working through the new/aliased form; `ssh3 -f` either means background per ssh(1) or is removed, decided and documented |
+| 2 | Identity flag | `-privkey` → add `-i` (sshd/ssh canon; `ssh3-c` already has `-i`) | `-i key` authenticates exactly like `-privkey key` |
+| 3 | Version flag | `-version` → add `-V` (client; server too) | `-V` prints the version and exits 0 |
+| 4 | Agent forwarding | `-forward-agent` → add `-A` (ssh(1); `-X` stays reserved for X11 semantics) | `-A` bridges the agent like the current `-forward-agent` |
+| 5 | Proxy jump | `-proxy-jump URL` → add `-J destination` (ssh(1) chains via commas) | `-J user@host:port` equal to `-proxy-jump` |
+| 6 | Local forwards | `-forward-tcp/-forward-udp localport/remoteip@remoteport` → add `-L [bind:]port:host:hostport` (ssh(1) shape; UDP — documented extension); verify `-R` against the ssh(1) shape | ssh2-shaped specs accepted end-to-end; old specs still parse |
+| 7 | Control master shapes | `-control-master/-control-path/-control-persist` → add `-M`, `-S path`, `-o ControlMaster=…/ControlPath=…/ControlPersist=…` | ssh2-shaped mux invocation works end to end |
+| 8 | Missing ssh2 keys | add `-q`, `-4/-6`; extend `-o` (Port, User, IdentityFile, LocalForward, RemoteForward, DynamicForward, ProxyJump — EscapeChar is done §7b) | each key unit-tested; precedence CLI > `-o` > `~/.ssh/config` |
+| 9 | Server host key/cert | `-key` → add `-h` (sshd canon), `-cert` → add `-c` (coincides with sshd `-c` host certificate) | `-h priv.key -c cert.pem` starts the daemon |
+| 10 | Server port | `-bind [::]:443` → add `-p port` (sshd canon; the bind address stays project-specific — QUIC needs it) | `-p 8443` serves on :8443 |
+
+DoD: every ssh2-shaped invocation of the table works against the fork binaries; every old invocation keeps working through the alias layer (regression-tested); `go test ./...` green; README en/ru/de documents the ssh2 forms as primary, the fork forms as aliases.
+
 ## 8. Non-goals
 
 - Do not chase X11 forwarding or interactive agent features before Stage 3 is done.
