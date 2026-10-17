@@ -4,7 +4,7 @@ All notable changes to the **nagual2 fork** of SSH3, starting from the first for
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each section maps to a release tag, newest first.
 
-## [Unreleased]
+## [0.1.36] - 2026-10-18
 
 ### Added
 - **`-f` goes to background (the ssh2 canon)**: after the row-1 retirement the maintainer chose to implement the background form. The Go runtime cannot fork an established connection, so `-f` re-execs a detached child (the ControlMaster daemon mechanics: no terminal, own process group on unix, `SSH3_F_DAEMON=1` marker) that runs the full startup itself; the parent validates and returns 0 immediately. The detached child cannot prompt, so every configuration needing an interactive answer is refused up front: password auth, the OIDC browser flow, the control master combination (it already backgrounds via `-control-persist`), and an unpinned host under the default ask policy — a key or the agent is required, exactly the ssh2 background usage. `-f` implies `-n` (the child's stdin is the null device); Windows runs in the foreground with a warning (no session detach yet, the control-master stance). `cmd/background.go` (TDD validator), the trilingual README parity tables updated.
