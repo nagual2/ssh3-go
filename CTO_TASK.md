@@ -261,7 +261,7 @@ Canon decision (the maintainer, 2026-10-17): **where the functionality matches, 
 
 DoD: every ssh2-shaped invocation of the table works against the fork binaries; every old invocation keeps working through the alias layer (regression-tested); `go test ./...` green; README en/ru/de documents the ssh2 forms as primary, the fork forms as aliases.
 
-Status 2026-10-17 (implementation session, Go side): rows 1–11 and 13 **done**, row 12 **open** (maintainer decision pending).
+Status 2026-10-17 (implementation session, Go side): rows 1–11 and 13 **done**, row 12 **decided** (default 10, run-time changeable; ssh3-c aligns in its wave).
 
 - Row 1 — **done 2026-10-17**: the transfer mode moved to the long form `-transfer`; `-f` is retired with a loud error pointing at `-transfer` (the "removed, decided and documented" variant — the ssh2 background semantics stays a separate future increment, since real `-f` needs auth-before-background). Documented in README en/ru/de.
 - Row 2 — **done**: `-i` routes through the privkey plugin's `IdentityFile` option.
@@ -274,7 +274,7 @@ Status 2026-10-17 (implementation session, Go side): rows 1–11 and 13 **done**
 - Row 9 — **done**: `-h priv.key` / `-c cert.pem`; giving both forms of the same knob is an error, not a silent last-one-wins.
 - Row 10 — **done**: `-p port` merges into `-bind` (bracketed IPv6 handled; a bare unbracketed IPv6 `-bind` is refused as ambiguous rather than guessed).
 - Row 11 — **done, the large-default variant**: idle 30 s → 24 h on **both** endpoints (QUIC negotiates the smaller of the two, so the client raises its side too; quic-go maps 0 to its 30 s default, so "unset" is expressed as a large value) and handshake 5 s → 120 s (the `LoginGraceTime` scale), client setup included. The probe form was not needed: the client already sends 1 s QUIC keepalives (`ServerAliveInterval`-tunable).
-- Row 12 — **open**: Go keeps the default cap of 10 per user (the conservative side) until the maintainer picks the canonical default for both implementations; no code change in this wave.
+- Row 12 — **decided 2026-10-17 (maintainer)**: the canonical default is **10** reverse forwards per user, changeable at run time (`-max-reverse-forwards` / `SSH3_MAX_REVERSE_FORWARDS`). Go already matches — no code change on this side; ssh3-c aligns its default (0 → 10) in its wave 1a, and the interop matrix covers both values.
 - Row 13 — **done**: the root gate (`server_auth.PasswordLoginRefused`) refuses root password auth in both Basic-auth handlers before the backend is consulted; the password-on default was already the sshd canon, and the deployed env file was corrected on the target host on 2026-10-17.
 
 DoD verification: `go test ./...` green (WSL, full uncached pass, 13 packages); new tests `cmd/ssh2_parity_test.go` (ssh2 shapes for -L/-J/-o/-p/-mergeBindPort/aliases) and `server_auth/root_gate_test.go`; README en/ru/de rewritten where the old forms were primary; CHANGELOG `Unreleased` entry.
