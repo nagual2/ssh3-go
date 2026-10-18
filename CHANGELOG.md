@@ -4,6 +4,11 @@ All notable changes to the **nagual2 fork** of SSH3, starting from the first for
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each section maps to a release tag, newest first.
 
+## [Unreleased]
+
+### Changed
+- **The client startup is quiet by default**: the init-time plugin registration logs ("plugin … successfully registered") are removed, the absent-SSH-agent notice drops from warning to debug, and both mains clamp the global log level to warnings-and-errors before the real level is resolved from `-v`/`-q`/`SSH3_LOG_LEVEL` — the pre-configure plugin/CLI-arg chatter no longer reaches the terminal (diagnostics stay available under `-v`). The session banner reads `ssh3-go session:` now (server-side; visible once servers are redeployed). A stray `%!s(<nil>)` in the connection-failure message is gone.
+
 ## [0.1.36] - 2026-10-18
 
 ### Added

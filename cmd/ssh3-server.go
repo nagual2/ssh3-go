@@ -693,7 +693,7 @@ func sessionBanner(user *unix_util.User) string {
 		kernel = strings.TrimSpace(string(data))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "\r\n ssh3 session: %s@%s\r\n", user.Username, host)
+	fmt.Fprintf(&b, "\r\n ssh3-go session: %s@%s\r\n", user.Username, host)
 	fmt.Fprintf(&b, " -------------------------------------------------------\r\n")
 	fmt.Fprintf(&b, "  date    : %s\r\n", now)
 	fmt.Fprintf(&b, "  kernel  : Linux %s %s\r\n", kernel, runtime.GOARCH)
@@ -949,6 +949,10 @@ func (i *autogenCertificates) Set(value string) error {
 }
 
 func ServerMain() int {
+	// the plugin registration (init-time) logs run before ConfigureLogger:
+	// keep the default startup quiet at the warnings-and-errors level until
+	// the real level is resolved from -v/SSH3_LOG_LEVEL
+	zerolog.SetGlobalLevel(zerolog.WarnLevel)
 	pprofutil.ServeIfEnabled(os.Getenv("SSH3_PPROF"))
 	bindAddr := flag.String("bind", "[::]:443", "the address:port pair to listen to, e.g. 0.0.0.0:443")
 	verbose := flag.Bool("v", false, "verbose mode, if set")

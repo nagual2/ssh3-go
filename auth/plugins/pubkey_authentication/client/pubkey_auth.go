@@ -148,7 +148,7 @@ var pubkeyPluginFunc auth.GetClientAuthMethodsFunc = func(request *http.Request,
 			return nil, nil
 		}
 	} else {
-		log.Warn().Msgf("no SSH agent is connected")
+		log.Debug().Msgf("no SSH agent is connected")
 	}
 	for _, opt := range clientConfig.Options() {
 		if o, ok := opt.(PubkeyAuthOption); ok {

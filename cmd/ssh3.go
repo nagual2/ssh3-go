@@ -591,6 +591,10 @@ func (v *FlagValue) IsBoolFlag() bool {
 }
 
 func ClientMain() int {
+	// the plugin registration (init-time) logs run before ConfigureLogger:
+	// keep the default startup quiet at the ssh(1) level (warnings and errors
+	// only until the real level is resolved from -v/-q/SSH3_LOG_LEVEL)
+	zerolog.SetGlobalLevel(zerolog.WarnLevel)
 	pprofutil.ServeIfEnabled(os.Getenv("SSH3_PPROF"))
 	internal.CloseClientPluginsRegistry()
 	internal.CloseServerPluginsRegistry()
@@ -1534,7 +1538,7 @@ func ClientMain() int {
 
 	if qconn == nil {
 		if status != 0 {
-			log.Error().Msgf("could not setup transport for client: %s", err)
+			log.Error().Msgf("could not setup transport for client")
 		}
 		return status
 	}
