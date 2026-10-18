@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); eac
 
 ## [Unreleased]
 
+## [0.1.37] - 2026-10-18
+
+### Added
+- **The Debian packaging wave**: the RFS-grade Debian source package (`packaging/debian`, quilt 3.0, debhelper 13, lintian 0E/0W in the sid CI): the binary package `ssh3-go` ships both the `ssh3` client and the `ssh3-server` daemon with fresh mdoc man pages, and Conflicts/Replaces the sibling C17 `ssh3-server` package in both directions — the drop-in replacement of the P8 wave. The offline build pins `-mod=vendor` + `GOTOOLCHAIN=local` against the vendored tree.
+
 ### Changed
 - **The client startup is quiet by default**: the init-time plugin registration logs ("plugin … successfully registered") are removed, the absent-SSH-agent notice drops from warning to debug, and both mains clamp the global log level to warnings-and-errors before the real level is resolved from `-v`/`-q`/`SSH3_LOG_LEVEL` — the pre-configure plugin/CLI-arg chatter no longer reaches the terminal (diagnostics stay available under `-v`). The session banner reads `ssh3-go session:` now (server-side; visible once servers are redeployed). A stray `%!s(<nil>)` in the connection-failure message is gone.
 
