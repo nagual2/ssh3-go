@@ -1,0 +1,4 @@
+debian/build/ssh3-server usr/bin/
+debian/ssh3-server.env etc/ssh3/
+# the ssh3-server unit is installed by dh_installsystemd (the
+# override --name below rules) straight to usr/lib/systemd/system

@@ -1,3 +1,20 @@
+ssh3-go (0.1.37-1) unstable; urgency=medium
+
+  * The openssh(8)-canon package split: three binary packages now -
+    ssh3-go-client (the /usr/bin/ssh3 CLI with its ssh3(1) man
+    page), ssh3-go-server (the daemon with the unit and the env
+    conffile, Depends on the matching ssh3-go-client) and the
+    ssh3go metapackage pulling the pair at matching versions.
+  * The upstream base moves to 0.1.37: the quiet-startup wave
+    (both mains clamp the log level, the banner reads ssh3-go
+    session), the trilingual wire protocol spec and the 0.1.37
+    CLI parity of the release notes.
+  * The drop-in conflict dance follows the split: ssh3-go-client
+    Conflicts/Replaces ssh3-client, ssh3-go-server does the same
+    against ssh3-server.
+
+ -- Max <nahual15@gmail.com>  Sun, 18 Oct 2026 19:30:00 +0000
+
 ssh3-go (0.1.36-1) unstable; urgency=medium
 
   * Initial release: the nagual2 fork of francoismichel/ssh3 at 0.1.36,

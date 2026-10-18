@@ -12,38 +12,65 @@ Build-Depends:
  golang-any (>= 2:1.26~),
  libcrypt-dev
 
-Package: ssh3-go
+Package: ssh3-go-client
+Architecture: amd64
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends}
+Conflicts: ssh3-client
+Replaces: ssh3-client
+Description: SSH3 client - SSH over QUIC/HTTP3 transport
+ The SSH3 client of the nagual2 fork (francoismichel/ssh3 lineage):
+ the ssh(1)-canon CLI over one HTTP/3 (QUIC) extended CONNECT per
+ target - sessions, the -L/-R/-D forwards (the documented udp://
+ extension), -J proxy jumps, the control master (-M/-S/-O), the
+ agent forwarding (-A), file transfers (ssh3 -transfer, the scp
+ analog) and the -f background form; the fork's own long names stay
+ as deprecated aliases.
+ .
+ The first connection pins the server certificate TOFU-style in
+ ~/.ssh3/known_hosts (the same store the C implementation reads).
+ See ssh3(1).
+
+Package: ssh3-go-server
 Architecture: amd64
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},
- openssl
+ openssl,
+ ssh3-go-client (= ${binary:Version})
 Conflicts: ssh3-server
 Replaces: ssh3-server
-Description: SSH3 client and server - SSH over QUIC/HTTP3 transport
- SSH3 in Go (the nagual2 fork of francoismichel/ssh3): the SSH3
- protocol carried over HTTP/3 (QUIC, RFC 9220 extended CONNECT).
- The package ships the ssh3 client and the ssh3-server daemon.
+Description: SSH3 server - SSH over QUIC/HTTP3 transport
+ The SSH3 daemon of the nagual2 fork: the SSH3 protocol carried over
+ HTTP/3 (QUIC, RFC 9220 extended CONNECT).  Public keys authenticate
+ out of the box (authorized_keys or ~/.ssh3/authorized_identities of
+ the target account); on amd64 passwords against the unix accounts
+ (the CGO crypt backend, enabled by default, SSH3_ENABLE_PASSWORD_
+ LOGIN=0 turns it off and the root account always refuses the
+ password step).  Reverse forwards honor the GatewayPorts policy;
+ the per-user limits and the brute-force lockout are tunable
+ through flags and SSH3_* variables read from /etc/ssh3/
+ ssh3-server.env.
  .
- The client CLI follows the ssh(1) canon: sessions, the ssh2-shaped
- -L/-R/-D forwards (the documented udp:// extension), -J proxy
- jumps, the control master (-M/-S), the agent forwarding (-A), file
- transfers (ssh3 -transfer, the scp analog) and the -f background
- form; the fork's own long forms stay as deprecated aliases.
+ The service runs as root with the per-session identity drop (the
+ OpenSSH shape), the Debian unit keeps no sandbox directives on
+ purpose; the enable/restart cycle rides dh_installsystemd
+ (policy 9.3).
  .
- The daemon authenticates public keys (the authorized_keys file or
- the ~/.ssh3/authorized_identities file of the target account) and,
- on amd64,
- passwords against the unix accounts (the CGO crypt backend,
- enabled by default; SSH3_ENABLE_PASSWORD_LOGIN=0 turns it off and
- the root account always refuses the password step).  Reverse
- forwards honor the GatewayPorts policy; the per-user limits
- (connections, channels, sftp sessions, reverse listeners) and the
- brute-force lockout are tunable through flags and SSH3_* variables
- read from /etc/ssh3/ssh3-server.env.
- .
- The binary package ssh3-go and the sibling C17 implementation
- package ssh3-server (source ssh3-c) conflict and replace each
- other in both directions: installing either one replaces the
- other's identical /usr/bin/ssh3 and /usr/bin/ssh3-server
- interfaces.
+ The server depends on the matching ssh3-go-client (the openssh(8)
+ canon: one release wave ships both halves together).
+
+Package: ssh3go
+Architecture: all
+Section: net
+Priority: optional
+Depends:
+ ${misc:Depends},
+ ssh3-go-client (= ${source:Version}),
+ ssh3-go-server (= ${source:Version})
+Description: SSH3 - SSH over QUIC/HTTP3 (client and server metapackage)
+ The openssh(8) `ssh' metapackage analog of this source package:
+ installs the ssh3-go-client and ssh3-go-server packages at matching
+ versions, so one install brings up the full SSH3 pair - the client
+ CLI and the daemon.
