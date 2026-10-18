@@ -64,7 +64,9 @@ jobs:
         run: |
           V="$PKGVER"
           cd /build
-          lintian --fail-on error "ssh3-go_${V}_amd64.deb"
+          lintian --fail-on error "ssh3-go-client_${V}_amd64.deb"
+          lintian --fail-on error "ssh3-go-server_${V}_amd64.deb"
+          lintian --fail-on error "ssh3go_${V}_all.deb"
           lintian --fail-on error "ssh3-go_${V}_amd64.changes"
           lintian --fail-on error "ssh3-go_${V}_source.changes"
           echo "=== lintian info on the binary changes ==="
