@@ -1,0 +1,48 @@
+#!/usr/bin/make -f
+# debian/rules - debhelper 13 build of the ssh3-go pair (the ssh3
+# client and the ssh3-server daemon) from the vendored module tree:
+# CGO on (the crypt password backend of the amd64 build), the Go PIE
+# binary through the gcc front end carrying the dpkg hardening
+# ladder.  The build is fully offline: -mod=vendor against the
+# vendor/ tree of the orig tarball.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export CGO_ENABLED = 1
+# the sid toolchain satisfies the go.mod floor (1.26): never reach
+# for the network to switch toolchains mid-build
+export GOTOOLCHAIN = local
+# release.yml sets -mod=mod for goreleaser; this build pins the
+# vendored mode explicitly and clears the ambient value
+export GOFLAGS =
+
+include /usr/share/dpkg/default.mk
+export CGO_CFLAGS = $(CFLAGS) $(CPPFLAGS)
+export CGO_LDFLAGS = $(LDFLAGS)
+
+%:
+	dh $@
+
+# no configure machinery of its own: the go build below is the whole
+# build system
+override_dh_auto_configure:
+	:
+
+override_dh_auto_build:
+	go build -mod=vendor -trimpath -buildmode=pie -o debian/build/ssh3 ./cmd/ssh3
+	go build -mod=vendor -trimpath -buildmode=pie -o debian/build/ssh3-server ./cmd/ssh3-server
+
+# the upstream ginkgo suite runs in the project CI, not wired into
+# this packaging build (see packaging/debian/README.source)
+override_dh_auto_test:
+	:
+
+# the .install lines pick the binaries straight from debian/build
+override_dh_auto_install:
+	:
+
+override_dh_installman:
+	dh_installman debian/ssh3.1 debian/ssh3-server.8
+
+override_dh_auto_clean:
+	dh_clean
+	rm -rf debian/build

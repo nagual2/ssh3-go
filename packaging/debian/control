@@ -1,0 +1,48 @@
+Source: ssh3-go
+Section: net
+Priority: optional
+Maintainer: Max <nahual15@gmail.com>
+Standards-Version: 4.7.2
+Homepage: https://github.com/nagual2/ssh3-go
+Vcs-Browser: https://github.com/nagual2/ssh3-go
+Vcs-Git: https://github.com/nagual2/ssh3-go.git
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ golang-any (>= 2:1.26~),
+ libcrypt-dev
+
+Package: ssh3-go
+Architecture: amd64
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+ openssl
+Conflicts: ssh3-server
+Replaces: ssh3-server
+Description: SSH3 client and server - SSH over QUIC/HTTP3 transport
+ SSH3 in Go (the nagual2 fork of francoismichel/ssh3): the SSH3
+ protocol carried over HTTP/3 (QUIC, RFC 9220 extended CONNECT).
+ The package ships the ssh3 client and the ssh3-server daemon.
+ .
+ The client CLI follows the ssh(1) canon: sessions, the ssh2-shaped
+ -L/-R/-D forwards (the documented udp:// extension), -J proxy
+ jumps, the control master (-M/-S), the agent forwarding (-A), file
+ transfers (ssh3 -transfer, the scp analog) and the -f background
+ form; the fork's own long forms stay as deprecated aliases.
+ .
+ The daemon authenticates public keys (authorized_keys or
+ .ssh3/authorized_identities of the target account) and, on amd64,
+ passwords against the unix accounts (the CGO crypt backend,
+ enabled by default; SSH3_ENABLE_PASSWORD_LOGIN=0 turns it off and
+ the root account always refuses the password step).  Reverse
+ forwards honor the GatewayPorts policy; the per-user limits
+ (connections, channels, sftp sessions, reverse listeners) and the
+ brute-force lockout are tunable through flags and SSH3_* variables
+ read from /etc/ssh3/ssh3-server.env.
+ .
+ The binary package ssh3-go and the sibling C17 implementation
+ package ssh3-server (source ssh3-c) conflict and replace each
+ other in both directions: installing either one replaces the
+ other's identical /usr/bin/ssh3 and /usr/bin/ssh3-server
+ interfaces.

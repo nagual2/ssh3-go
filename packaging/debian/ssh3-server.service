@@ -1,0 +1,41 @@
+[Unit]
+Description=SSH3 server (sessions and forwards over HTTP/3, RFC 9220)
+Documentation=man:ssh3-server(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# exec: the failure of the binary itself (bad cert/key paths) must
+# fail the unit, not hang "simple"
+Type=exec
+ExecStart=/usr/bin/ssh3-server -bind [::]:443 -cert /etc/ssh3/cert.pem -key /etc/ssh3/priv.key
+# the Debian conffile; the "-" tolerates a missing file after a purge
+EnvironmentFile=-/etc/ssh3/ssh3-server.env
+#
+# PRIVILEGE MODEL - the OpenSSH/Go shape: the service runs as root
+# and after the CONNECT authentication every session with a
+# resolvable username drops onto it (initgroups, setgid, setuid, the
+# home chdir; util/unix_util/user.go) before any spawn; a user
+# without a passwd entry answers 401 at the CONNECT.  Password auth
+# is compiled in on the amd64 build (the CGO crypt backend) and
+# enabled by default; the root account always refuses the password
+# step (the PermitRootLogin prohibit-password analog).  No sandbox
+# directives here on purpose, the sshd shape: the session children
+# are full-identity shells, and every Namespacing/capability
+# directive on this unit becomes their inherited ceiling
+# (CapabilityBoundingSet without CAP_SYSLOG breaks root dmesg,
+# PrivateTmp hides the host /tmp, NoNewPrivileges breaks the setuid
+# ladder itself).  A hardened single-identity deployment wants a
+# User=ssh3 drop-in with -enable-password-login=false instead.
+#
+# sshd parity: a daemon restart must not kill the active user
+# sessions, the children stay in their own process groups
+KillMode=process
+# the daemon drains the active conversations on SIGTERM (default 5s,
+# SSH3_SHUTDOWN_DRAIN); 30s leaves it one drain plus the close grace
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

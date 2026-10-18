@@ -1,0 +1,82 @@
+README.source for the ssh3-go Debian package
+============================================
+
+What this package builds
+-------------------------
+
+Two binaries from one Go module tree (the nagual2 fork of
+francoismichel/ssh3, module github.com/francoismichel/ssh3):
+
+  * /usr/bin/ssh3         - the SSH3 client (cmd/ssh3)
+  * /usr/bin/ssh3-server  - the SSH3 daemon (cmd/ssh3-server)
+
+Both are Go PIE binaries linked through the gcc front end
+(-buildmode=pie, CGO_ENABLED=1) so that the dpkg hardening ladder
+(DEB_BUILD_MAINT_OPTIONS=hardening=+all: the stack protector,
+fortify sources, RELRO, bind-now) applies to the C runtime pieces;
+CGO is required by the crypt password backend of the amd64 build
+(util/unix_util, libcrypt).
+
+The Debian maintainer files live in the upstream tree under
+packaging/debian/ and are copied to debian/ of the assembled source
+tree before dpkg-buildpackage (see .github/workflows/debian-package.yml
+for the exact sequence).
+
+The vendor/ tree
+----------------
+
+The module ships its dependency tree vendored (go mod vendor), and
+the orig tarball is a verbatim git archive of the upstream tag
+including vendor/.  The build pins -mod=vendor and GOTOOLCHAIN=local:
+no network access is needed after the orig is assembled, no
+toolchain download can happen mid-build.
+
+One deliberate irregularity: vendor/h3 is NOT a Go module - it is
+the vendored h3 Rust crate of the [patch.crates-io] section in the
+root Cargo.toml (the SSH3-Rust workspace lineage).  It is not part
+of the Go build and not part of this package; go's vendor-mode
+consistency check tolerates it (verified with Go 1.26).
+
+Toolchain
+---------
+
+go.mod declares the Go floor 1.26; the package targets unstable,
+where golang-any (2:1.27~1 at the time of writing) satisfies
+Build-Depends: golang-any (>= 2:1.26~).  The trixie toolchain
+(1.24) does NOT satisfy the floor - the package is an unstable
+target, not a stable backport.
+
+Drop-in replacement dance
+-------------------------
+
+The binary package ssh3-go ships the same /usr/bin/ssh3 and
+/usr/bin/ssh3-server interfaces as the sibling C17 implementation
+(source ssh3-c, binary package ssh3-server).  Both sides declare
+Conflicts/Replaces against each other, so installing either one
+replaces the other; the systemd unit, the conffile
+/etc/ssh3/ssh3-server.env and the man pages follow the same paths in
+both packages.
+
+The Go daemon has no socket-activation support (no sd_listen_fds
+handling): unlike ssh3-c, this package ships a plain service unit
+binding UDP/443 itself; the enable/restart cycle is carried by
+dh_installsystemd (policy 9.3), the maintainer scripts contain no
+direct systemctl calls.
+
+Tests
+-----
+
+The upstream ginkgo/pytest-style suite (integration_tests/) needs
+generated SSH keys, test users and a running server; it runs in the
+project CI (.github/workflows/test.yml), not in the packaging
+build (debian/rules overrides dh_auto_test).  The packaging build
+verifies the build itself: two binaries, PIE, against the vendored
+tree.
+
+Building
+--------
+
+  # from an assembled tree (orig + debian/ side by side)
+  dpkg-buildpackage -us -uc -S   # source
+  dpkg-buildpackage -us -uc -b   # binary
+  lintian --fail-on error ../ssh3-go_*.changes

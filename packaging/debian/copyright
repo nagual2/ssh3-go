@@ -1,0 +1,21 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: ssh3-go
+Upstream-Contact: Max <nahual15@gmail.com>
+Source: https://github.com/nagual2/ssh3-go
+
+Files: *
+Copyright: the francoismichel/ssh3 authors
+           2026 The nagual2 ssh3 Authors
+License: Apache-2.0
+Comment: the upstream francoismichel/ssh3 project is Apache-2.0
+ (LICENSE, no explicit copyright line); the nagual2 fork headers read
+ "Copyright 2026 The nagual2 ssh3 Authors.
+ SPDX-License-Identifier: Apache-2.0".  The vendor/ tree keeps each
+ vendored module's own LICENSE file in place: the Go modules from
+ go.mod/go.sum and the vendored h3 Rust crate (the
+ [patch.crates-io] source of the SSH3-Rust workspace, not built by
+ this packaging build).  The complete dependency set is go.mod.
+
+License: Apache-2.0
+ The full text of the Apache License 2.0 is distributed in
+ /usr/share/common-licenses/Apache-2.0 on Debian systems.

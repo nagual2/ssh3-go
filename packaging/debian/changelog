@@ -1,0 +1,35 @@
+ssh3-go (0.1.36-1) unstable; urgency=medium
+
+  * Initial release: the nagual2 fork of francoismichel/ssh3 at 0.1.36,
+    the SSH3 protocol in Go - SSH sessions, forwards and file
+    transfers carried over QUIC/HTTP3 (RFC 9220 extended CONNECT).
+    This source package ships both the ssh3 client and the
+    ssh3-server daemon.
+  * CLI parity with the ssh(1)/sshd(8) canon: client -i, -V, -A, -J,
+    -L, -D, -R, -M, -S, -q, -4, -6, -p and the repeatable -o keywords;
+    server -c, -h, -p; the fork's own long forms stay as deprecated
+    aliases, precedence CLI flag > -o > ~/.ssh/config.
+  * The ssh2 background form: ssh3 -f re-execs a detached child after
+    a non-interactive (key/agent) authentication; interactive
+    configurations refuse up front, the file-transfer long form is
+    ssh3 -transfer SRC DST (with -r, --continue, --checksum).
+  * Password authentication rides on by default on amd64 (the CGO
+    crypt backend against the unix accounts): per-account lockout
+    (SSH3_MAX_PASSWORD_FAILURES / SSH3_PASSWORD_LOCKOUT_SECONDS) and
+    the unauthenticated conversation cap bound the brute force; the
+    root account always refuses the password step (the
+    PermitRootLogin prohibit-password analog).
+  * The sshd-canon timeouts: -max-idle-timeout defaults to 24h
+    (ClientAliveInterval=0) and -handshake-idle-timeout to 120s (the
+    LoginGraceTime scale).
+  * Fork audit hardening: stale datagrams no longer kill the receive
+    loops of either side (F-14/F-19), the dangling-datagram queue
+    evicts oldest instead of failing closed (F-15), closed channels
+    are pruned from the conversation manager (P4-02).
+  * Debian drop-in note: this binary package (ssh3-go) and the
+    sibling C17 implementation package ssh3-server (source ssh3-c)
+    conflict and replace each other in both directions - installing
+    either one replaces the other's identical /usr/bin/ssh3 and
+    /usr/bin/ssh3-server interfaces.
+
+ -- Max <nahual15@gmail.com>  Sun, 18 Oct 2026 12:00:00 +0000

@@ -1,0 +1,3 @@
+# The ITP bug number does not exist yet: the Closes: line lands in
+# debian/changelog together with the mentors.debian.net upload.
+ssh3-go: initial-upload-closes-no-bugs

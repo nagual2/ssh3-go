@@ -1,0 +1,201 @@
+.Dd October 18, 2026
+.Dt SSH3-SERVER 8
+.Os ssh3-go
+.Sh NAME
+.Nm ssh3-server
+.Nd SSH3 server: user sessions and forwards over HTTP/3 (QUIC)
+.Sh SYNOPSIS
+.Nm
+.Op Fl -bind Ar addr:port
+.Op Fl c Ar certfile
+.Op Fl h Ar keyfile
+.Op Fl p Ar port
+.Op Fl -url-path Ar path
+.Op Fl -enable-password-login Op Cm true | false
+.Op Fl -gateway-ports Cm no | yes | clientspecified
+.Op Fl -generate-selfsigned-cert
+.Op Fl -generate-public-cert Ar domain
+.Op Fl -stream-rx-mb Ar mib
+.Op Fl -conn-rx-mb Ar mib
+.Op Fl -initial-packet-size Ar bytes
+.Op Fl -sftp-jail Cm chroot | lexical
+.Op Fl -permit-open Ar spec
+.Op Fl -permit-listen Ar spec
+.Op Fl -max-unauth-conversations Ar n
+.Op Fl -max-password-failures Ar n
+.Op Fl -password-lockout-seconds Ar s
+.Op Fl -max-reverse-forwards Ar n
+.Op Fl -max-channels-per-conversation Ar n
+.Op Fl -max-sftp-sessions-per-user Ar n
+.Op Fl -max-connections Ar n
+.Op Fl -max-idle-timeout Ar seconds
+.Op Fl -handshake-idle-timeout Ar seconds
+.Op Fl -max-incoming-streams Ar n
+.Op Fl -max-incoming-uni-streams Ar n
+.Op Fl v
+.Op Fl V
+.Sh DESCRIPTION
+.Nm
+speaks the SSH3 protocol: one QUIC (UDP) listener carries an HTTP/3
+extended CONNECT to the
+.Pa /ssh3-term
+route
+.Pq Fl -url-path ,
+and every subsequent bidirectional stream is an SSH3 channel.
+Shell and exec sessions, direct-tcp and direct-udp forwards, the
+in-process SFTP and forward-agent bridges ride those channels.
+The client CLI is
+.Xr ssh3 1 .
+.Pp
+The daemon runs as root and, after the CONNECT authentication,
+drops every session with a resolvable username onto that account
+(initgroups, setgid, setuid, the home chdir) before any spawn; a
+user without a passwd entry answers 401 at the CONNECT.
+Public keys authenticate out of the box: the OpenSSH
+.Pa authorized_keys
+file or the
+.Pa .ssh3/authorized_identities
+file of the target account.
+Password authentication rides on by default on the amd64 build (the
+CGO crypt backend; the Debian package depends on the build that
+ships it): the Basic step verifies against the unix accounts, the
+brute force stays bounded by the per-account lockout
+.Pq Fl -max-password-failures , Fl -password-lockout-seconds
+and the unauthenticated conversation cap, and the root account
+always refuses the password step
+.Pq the PermitRootLogin prohibit-password analog .
+Turn it off with
+.Fl -enable-password-login=false
+or
+.Ev SSH3_ENABLE_PASSWORD_LOGIN=0 .
+.Pp
+Every option below has an
+.Ev SSH3_*
+environment counterpart (the same name upper-cased), read from the
+conffile
+.Pa /etc/ssh3/ssh3-server.env
+through the systemd
+.Cm EnvironmentFile .
+.Ss Host keys and certificates
+The QUIC handshake needs an X.509 certificate
+.Pq Fl c Ar certfile , the default ./cert.pem
+and its private key
+.Pq Fl h Ar keyfile , the default ./priv.key .
+The Debian unit passes
+.Pa /etc/ssh3/cert.pem
+and
+.Pa /etc/ssh3/priv.key ;
+a missing pair is generated at install time with the mandatory
+IP/DNS subjectAltNames (clients validate the certificate against
+the address they dial).
+.Fl -generate-selfsigned-cert
+writes a self-signed pair to the
+.Fl c / Fl h
+paths (they must not exist yet);
+.Fl -generate-public-cert
+produces a public Let's Encrypt certificate for the given domain
+(repeated for several domains, reused and renewed automatically
+while the server runs).
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl -bind Ar addr:port
+The QUIC listen address
+.Pq default Li [::]:443 .
+.It Fl p Ar port
+The listen port, the sshd
+.Fl p
+form: overrides the port part of
+.Fl -bind ,
+the bind address stays.
+.It Fl -url-path Ar path
+The HTTP/3 CONNECT route
+.Pq default Li /ssh3-term .
+.It Fl c Ar certfile , Fl h Ar keyfile
+The host certificate and key, the sshd-shaped aliases of
+.Fl -cert / Fl -key .
+.It Fl -enable-password-login Op Cm true | false
+Password authentication against the unix accounts
+.Pq default true on the amd64 build .
+.It Fl -gateway-ports Cm no | yes | clientspecified
+The GatewayPorts policy of the reverse (Fl R) listeners
+.Pq the sshd_config semantics , default Cm no :
+force loopback binds, allow any bind, or let the client ask.
+.It Fl -generate-selfsigned-cert
+Generate a self-signed certificate/key pair at the
+.Fl c / Fl h
+paths and use it.
+.It Fl -generate-public-cert Ar domain
+Produce and renew a public Let's Encrypt certificate for
+.Ar domain .
+.It Fl -stream-rx-mb Ar mib , Fl -conn-rx-mb Ar mib
+Initial per-stream / per-connection flow control receive windows in
+MiB (defaults 8/16).
+.It Fl -initial-packet-size Ar bytes
+Initial QUIC packet size
+.Pq default 1350 .
+.It Fl -sftp-jail Cm chroot | lexical
+SFTP path isolation: the per-session child chroots into the user's
+home
+.Pq Cm chroot , the sshd model
+or the in-process lexical jail
+.Pq Cm lexical .
+.It Fl -permit-open Ar spec , Fl -permit-listen Ar spec
+The allowed host:port targets of the client-side forwards and the
+allowed binds of the reverse listeners
+.Pq comma/space separated, Cm * wildcards, Cm ! negates; empty: unrestricted .
+.It Fl -max-unauth-conversations Ar n
+Conversations sitting unauthenticated before refusals (the
+MaxStartups analog).
+.It Fl -max-password-failures Ar n , Fl -password-lockout-seconds Ar s
+The password brute-force lockout: failures per account and the
+lockout duration.
+.It Fl -max-reverse-forwards Ar n , Fl -max-channels-per-conversation Ar n , Fl -max-sftp-sessions-per-user Ar n , Fl -max-connections Ar n
+Per-user / global resource caps
+.Pq 0: no limit .
+.It Fl -max-idle-timeout Ar seconds , Fl -handshake-idle-timeout Ar seconds
+The QUIC idle and handshake timeouts, the sshd canon
+.Pq defaults 24h and 120s: the ClientAliveInterval=0 and
+LoginGraceTime shapes .
+.It Fl -max-incoming-streams Ar n , Fl -max-incoming-uni-streams Ar n
+QUIC transport limits for peer-initiated streams.
+.It Fl v , Fl V
+Verbose logging; print the software version and exit.
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev SSH3_ENABLE_PASSWORD_LOGIN
+0/1: the password authentication switch
+.Pq default 1 on the amd64 build .
+.It Ev SSH3_GATEWAY_PORTS
+The GatewayPorts policy
+.Pq Cm no | yes | clientspecified .
+.It Ev SSH3_LOG_LEVEL , Ev SSH3_LOG_FILE
+The log level
+.Pq debug | info | warn | error
+and the log file (unset: stderr, which under systemd reaches the
+journal).
+.It Ev SSH3_SHUTDOWN_DRAIN
+Seconds to drain the active conversations on SIGTERM before the
+close grace
+.Pq default 5 .
+.It Ev SSH3_PPROF
+If set, serve the Go pprof endpoint.
+.El
+The remaining limits above all read their
+.Ev SSH3_*
+counterparts
+.Pq for example Ev SSH3_MAX_CONNECTIONS , Ev SSH3_PERMIT_OPEN .
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa /etc/ssh3/cert.pem , Pa /etc/ssh3/priv.key
+The host certificate and key pair of the Debian unit (generated at
+install time when missing).
+.It Pa /etc/ssh3/ssh3-server.env
+The conffile read through the unit's
+.Cm EnvironmentFile .
+.It Pa ~/.ssh/authorized_keys , Pa ~/.ssh3/authorized_identities
+The per-account public key chains, the sshd compatibility and the
+native form.
+.El
+.Sh SEE ALSO
+.Xr ssh3 1 ,
+.Xr sshd 8

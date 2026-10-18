@@ -1,0 +1,82 @@
+name: debian-package
+
+# The Debian unstable (sid) source/binary build of packaging/debian
+# (the RFS package): sid carries the Go 1.26+ toolchain the fork's
+# go.mod floor requires (trixie is still on 1.24), so the runner
+# stays vanilla ubuntu-latest.  The build is offline: the orig
+# tarball is a verbatim git archive including the vendor/ tree and
+# the rules pin -mod=vendor.
+
+on:
+  push:
+    branches:
+      - main
+      - "pkg/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:sid
+    steps:
+      - name: install the build and lintian toolchain
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends golang-any libcrypt-dev debhelper git ca-certificates fakeroot lintian dpkg-dev
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: assemble the quilt source tree
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          export PATH=/usr/lib/go/bin:/usr/lib/go-1.26/bin:$PATH
+          go version
+          V="$(dpkg-parsechangelog -S Version -lpackaging/debian/changelog)"
+          UPV="${V%%-*}"
+          echo "PKGVER=$V" >> "$GITHUB_ENV"
+          echo "PKGUPV=$UPV" >> "$GITHUB_ENV"
+          # the orig carries the UPSTREAM version (no debian revision)
+          # and the tree verbatim - vendor/ included: dpkg-source looks
+          # for ../ssh3-go_<upstream>.orig.tar.gz
+          git archive --format=tar.gz --prefix="ssh3-go-$UPV/" HEAD > "/tmp/ssh3-go_${UPV}.orig.tar.gz"
+          mkdir -p /build
+          tar -xzf "/tmp/ssh3-go_${UPV}.orig.tar.gz" -C /build
+          cp -r "$GITHUB_WORKSPACE/packaging/debian" "/build/ssh3-go-$UPV/debian"
+
+      - name: dpkg-buildpackage (source first, then binary)
+        run: |
+          V="$PKGVER"
+          UPV="$PKGUPV"
+          cp "/tmp/ssh3-go_${UPV}.orig.tar.gz" "/build/ssh3-go_${UPV}.orig.tar.gz"
+          cd "/build/ssh3-go-$UPV"
+          dpkg-buildpackage -us -uc -S
+          dpkg-buildpackage -us -uc -b
+          cp "/tmp/ssh3-go_${UPV}.orig.tar.gz" "/build/ssh3-go_${UPV}.orig.tar.gz"
+          ls -la /build/*.deb /build/*.dsc /build/*.changes /build/*.orig.tar.gz
+
+      - name: lintian (errors are fatal)
+        run: |
+          V="$PKGVER"
+          cd /build
+          lintian --fail-on error "ssh3-go_${V}_amd64.deb"
+          lintian --fail-on error "ssh3-go_${V}_amd64.changes"
+          lintian --fail-on error "ssh3-go_${V}_source.changes"
+          echo "=== lintian info on the binary changes ==="
+          lintian --info "ssh3-go_${V}_amd64.changes" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: |
+            /build/*.deb
+            /build/*.dsc
+            /build/*.changes
+            /build/*.debian.tar.xz
+            /build/*.orig.tar.gz
+          if-no-files-found: error

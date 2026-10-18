@@ -1,0 +1,3 @@
+debian/build/ssh3 usr/bin/
+debian/build/ssh3-server usr/bin/
+debian/ssh3-server.env etc/ssh3/

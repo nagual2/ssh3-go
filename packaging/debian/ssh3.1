@@ -1,0 +1,169 @@
+.Dd October 18, 2026
+.Dt SSH3 1
+.Os ssh3-go
+.Sh NAME
+.Nm ssh3
+.Nd SSH3 client: sessions, forwards and file transfers over HTTP/3
+.Sh SYNOPSIS
+.Nm
+.Op Fl 46AqNvVfM
+.Op Fl i Ar identity_file
+.Op Fl p Ar port
+.Op Fl L Ar [bind:]port:host:port
+.Op Fl R Ar [bind:]port:host:port
+.Op Fl D Ar [bind:]port
+.Op Fl J Ar destination
+.Op Fl o Ar keyword=value
+.Op Fl S Ar ctl_path
+.Op Fl -transfer Ar SRC DST
+.Ar [user@]host Ns Op :port
+.Op Ar command ...
+.Sh DESCRIPTION
+.Nm
+connects to an
+.Xr ssh3-server 8
+endpoint: one QUIC
+.Pq UDP
+connection carries an HTTP/3 extended CONNECT
+.Rs
+.%T RFC 9220
+.%D October 2022
+.Re
+to the server route
+.Pq default Li /ssh3-term ,
+and every subsequent bidirectional stream is an SSH3 channel for
+sessions, forwards and file transfers.
+The CLI follows the
+.Xr ssh 1
+canon: the launch keys and the
+.Fl o
+keywords accept the OpenSSH shapes, the fork's own long names stay
+as deprecated aliases; the precedence is CLI flag, then
+.Fl o ,
+then
+.Pa ~/.ssh/config .
+.Pp
+Authentication: public keys (the OpenSSH agent, the identity files
+of the auth plugins; unattended under
+.Fl f ) ,
+the OIDC id_tokens
+.Pq Fl -use-oidc ,
+or the classical password prompt
+.Pq Fl -use-password .
+The first connection pins the server certificate in
+.Pa ~/.ssh3/known_hosts
+.TofU ,
+the
+.Fl -strict-host-key-checking
+policy
+.Pq and the StrictHostKeyChecking -o keyword
+governs the pin/ask/refuse decision afterwards.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl 4 , Fl 6
+Force the IPv4/IPv6 address family for the QUIC dial.
+.It Fl i Ar identity_file
+The private key file for public key authentication
+.Pq the sshd Fl i shape .
+.It Fl p Ar port
+The remote port, overriding
+.Fl o Cm Port ,
+the operand port and
+.Pa ~/.ssh/config .
+.It Fl L Ar [bind:]port:host:port
+Local forwarding
+.Pq repeatable ;
+the
+.Cm udp://
+prefix marks the documented UDP extension.
+.It Fl R Ar [bind:]port:host:port
+Reverse forwarding: the server binds and forwards to the local
+target
+.Pq repeatable .
+.It Fl D Ar [bind:]port
+Dynamic (SOCKS5) forwarding
+.Pq repeatable ;
+an empty or
+.Cm *
+bind listens on every interface.
+.It Fl J Ar destination
+Proxy jump: a comma-separated chain of SSH3 hops, tunneled UDP hop
+by hop
+.Pq the Xr ssh 1 Fl J shape .
+.It Fl o Ar keyword=value
+Configuration option, repeatable: Cm Port, User, IdentityFile,
+LocalForward, RemoteForward, DynamicForward, ProxyJump,
+ControlMaster, ControlPath, ControlPersist, StrictHostKeyChecking
+and the other
+.Xr ssh_config 5
+keywords the fork implements.
+.It Fl M , Fl S Ar ctl_path
+Control master mode and its unix socket path (share one connection
+across invocations).
+.It Fl O Ar op
+Control operation on a running master: Cm check, stop, exit.
+.It Fl A
+Forward the ssh agent to the remote host.
+.It Fl f
+Go to background after startup: re-execs a detached child after a
+non-interactive (key/agent) authentication; interactive
+configurations
+.Pq passwords, the OIDC browser flow, an unpinned host under the ask policy
+refuse up front.
+.It Fl N
+No remote command or session: hold the connection open for the
+forwards.
+.It Fl q , Fl v
+Quiet / verbose diagnostics.
+.It Fl V
+Print the software version and exit.
+.It Fl -transfer Ar SRC DST
+File transfer mode, the scp analog: exactly one operand is
+local, the other is
+.Ar user@host:path
+(upload towards, download from); flags
+.Fl r
+(recursive),
+.Fl -continue
+(resume interrupted transfers),
+.Fl -checksum
+(SHA-256 verification, automatic over 32 MiB).
+.It Fl -use-password , Fl -use-oidc , Fl -oidc-config , Fl -no-pkce
+The password prompt, the OIDC flow with the issuer URL and its
+JSON client config, the PKCE switch.
+.It Fl -insecure , Fl -strict-host-key-checking
+Certificate verification off; the strict-host-key-checking policy
+.Pq Cm yes | no | accept-new | ask .
+.It Fl -keylog Ar file
+Write the QUIC TLS keys for debugging.
+.It Fl -packet-size Ar bytes , Fl -stream-rx-mb Ar mib , Fl -conn-rx-mb Ar mib
+QUIC tuning: initial packet size and the flow control receive
+windows (defaults 1350, 8, 16).
+.It Fl -control-master Cm no | yes | auto , Fl -control-path Ar path , Fl -control-persist Cm no | yes | Ns Ar seconds
+The long forms of
+.Fl M / Fl S
+and the master idle timeout.
+.El
+.Pp
+Deprecated aliases
+.Pq the pre-parity fork forms: Fl -privkey , Fl -proxy-jump , Fl -forward-agent , Fl -forward-tcp , Fl -forward-udp , Fl -P , Fl U
+stay accepted.
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev SSH3_LOG_LEVEL
+The diagnostic log level
+.Pq debug | info | warn | error .
+.It Ev SSH3_PPROF
+If set, serve the Go pprof endpoint.
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.ssh3/known_hosts
+The TOFU pin store of the server certificates.
+.It Pa ~/.ssh/config
+The OpenSSH configuration, consulted for the implemented keywords.
+.El
+.Sh SEE ALSO
+.Xr ssh3-server 8 ,
+.Xr ssh 1 ,
+.Xr ssh_config 5

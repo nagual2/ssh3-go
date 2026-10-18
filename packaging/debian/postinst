@@ -1,0 +1,31 @@
+#!/bin/sh
+# postinst for ssh3-go: generate the self-signed host certificate on
+# the first configure.  Clients validate the QUIC certificate against
+# the address they dial, so the SANs are mandatory (IP + DNS) and a
+# bare CN fails the handshake verification.  The systemd
+# enable/restart dance is left to the dh_installsystemd snippet at
+# the debhelper marker below: the service unit carries the [Install]
+# and gets enabled by debhelper per policy 9.3 - no direct systemctl
+# calls anywhere.
+set -e
+
+case "$1" in
+    configure)
+        if [ ! -s /etc/ssh3/cert.pem ] || [ ! -s /etc/ssh3/priv.key ]; then
+            rm -f /etc/ssh3/cert.pem /etc/ssh3/priv.key
+            HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+            SAN="DNS:$(hostname -s),DNS:$(hostname)"
+            [ -n "$HOST_IP" ] && SAN="IP:$HOST_IP,$SAN"
+            openssl req -x509 -newkey ed25519 -nodes -days 3650 \
+                -subj "/CN=$(hostname -s)" \
+                -addext "subjectAltName=$SAN" \
+                -keyout /etc/ssh3/priv.key -out /etc/ssh3/cert.pem >/dev/null 2>&1
+            chmod 600 /etc/ssh3/priv.key
+            chmod 644 /etc/ssh3/cert.pem
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
