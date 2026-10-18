@@ -30,6 +30,7 @@ Dieser Fork zielt darauf ab, die Go-Implementierung zu einem praktischen Alltags
 - **Statistik-Banner beim Login.** Interaktive Sitzungen zeigen vor dem Shell-Prompt Uptime, Load, Arbeitsspeicher und Festplatte (`exec`-Anfragen bleiben unberührt).
 - **Locale- und Shell-Fixes.** Der Server reicht `LANG`/`LC_*` aus seiner systemd-Umgebung an die Benutzer-Shells weiter und startet die echte Login-Shell des Kontos aus `/etc/passwd` statt eines hartkodierten `/bin/sh`.
 - **CI.** Jedes `v*`-Tag erzeugt Release-Archive und ein `.deb` via goreleaser; jeder Push nach `main` erzeugt Windows-Client-Artefakte.
+- **Spezifikation des Wire-Protokolls.** Das Protokoll, das dieser Fork spricht, ist als Projektdokument im Repository des C17-Ports festgehalten: [SSH3 wire protocol, rev nagual2/1](https://github.com/nagual2/ssh3-c/blob/main/docs/SPEC-wire.md) — das draft-michel-remote-terminal-http3-00-Gerüst, an beiden lebenden Implementierungen (dieser Fork + ssh3-c) verifiziert.
 
 ## Download & Installation
 Die Assets gibt es im [neuesten Release](https://github.com/nagual2/ssh3-go/releases/latest):
