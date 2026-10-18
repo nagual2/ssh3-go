@@ -26,7 +26,7 @@ jobs:
       - name: install the build and lintian toolchain
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends golang-any libcrypt-dev debhelper git ca-certificates fakeroot lintian dpkg-dev
+          apt-get install -y --no-install-recommends build-essential golang-any libcrypt-dev debhelper git ca-certificates fakeroot lintian dpkg-dev
 
       - uses: actions/checkout@v4
         with:
