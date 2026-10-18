@@ -31,8 +31,9 @@ Description: SSH3 client and server - SSH over QUIC/HTTP3 transport
  transfers (ssh3 -transfer, the scp analog) and the -f background
  form; the fork's own long forms stay as deprecated aliases.
  .
- The daemon authenticates public keys (authorized_keys or
- .ssh3/authorized_identities of the target account) and, on amd64,
+ The daemon authenticates public keys (the authorized_keys file or
+ the ~/.ssh3/authorized_identities file of the target account) and,
+ on amd64,
  passwords against the unix accounts (the CGO crypt backend,
  enabled by default; SSH3_ENABLE_PASSWORD_LOGIN=0 turns it off and
  the root account always refuses the password step).  Reverse

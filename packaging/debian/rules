@@ -43,6 +43,12 @@ override_dh_auto_install:
 override_dh_installman:
 	dh_installman debian/ssh3.1 debian/ssh3-server.8
 
+# the unit carries the daemon's name, not the binary package name
+# (ssh3-go): debhelper needs the explicit --name for the
+# enable/restart snippets (policy 9.3)
+override_dh_installsystemd:
+	dh_installsystemd --name=ssh3-server
+
 # dwz cannot parse the Go DWARF (the .debug_addr section of DWARF 5):
 # the Go packaging canon skips it, dh_strip keeps the standard strip
 override_dh_dwz:
