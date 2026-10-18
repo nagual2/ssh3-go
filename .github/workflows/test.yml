@@ -10,13 +10,12 @@ jobs:
   build-linux:
     strategy:
         matrix:
-          go-version: [ '1.21.x', '1.22.0-rc.1' ]
           goos: [linux]
           testuser: [ssh3-testuser]
           testpasswd: [ssh3-testpasswd]
           testuserhome: [/home/ssh3-testuser]
           archparams: [{goarch: amd64, cc: gcc}] #,{goarch: arm64, cc: aarch64-linux-gnu-gcc}]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -37,7 +36,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
         with:
-          go-version: '${{matrix.go-version}}'
+          go-version-file: go.mod
+      - name: Install the CGO crypt backend headers
+        run: sudo apt-get update && sudo apt-get -y install libcrypt-dev
       - name: Lint and vet code
         run: |
           make lint
