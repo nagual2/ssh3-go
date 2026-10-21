@@ -1,5 +1,6 @@
 /bin/
 /target/
+/SSH3-Rust/target/
 dist/
 /ssh3.exe
 

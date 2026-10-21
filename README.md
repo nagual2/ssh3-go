@@ -6,17 +6,17 @@
 > SSH3 is still experimental, and the protocol name may still change. The protocol remains SSH-style session and channel semantics carried over QUIC and HTTP/3 Extended CONNECT, but the implementation and surrounding product surface are still evolving.
 
 > [!WARNING]
-> **The Rust workspace under `crates/` is frozen (dormant) since 2026-10-13**: it is not built by CI, not shipped in any release, and the audit findings inside it (F-16, F-20, the F-19 client residual) are frozen with the code — not scheduled for fixing. See `crates/FROZEN.md`. The Go implementation is the only shipped product.
+> **The Rust implementation now lives in its own repository**: [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). It was extracted from this repository on 2026-10-21 and is frozen (dormant) since 2026-10-13 — not built by CI, not shipped in any release, with its audit findings (F-16, F-20, the F-19 client residual) frozen along with the code. The Go implementation is the only shipped product.
 
 # SSH3 over HTTP/3
 **English** | [Русский](README.ru.md) | [Deutsch](README.de.md)
 
 SSH3 maps RFC 4254-style remote session semantics onto QUIC, TLS 1.3, and HTTP/3 Extended CONNECT. The project aims to preserve familiar SSH workflows while adding HTTP-native authentication and QUIC-native transport features such as datagram forwarding.
 
-This repository currently contains two implementations:
+This repository holds the Go implementation; the Rust rewrite lives in a separate project.
 
 - The original Go client and server in [`cmd/ssh3`](cmd/ssh3) and [`cmd/ssh3-server`](cmd/ssh3-server)
-- An in-progress Rust rewrite in [`crates/`](crates)
+- An in-progress Rust rewrite, extracted into its own project: [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust)
 
 > [!WARNING]
 > Do not treat either implementation as production-hardened. The protocol and code are still under active development, and the Rust rewrite is focused on correctness and interoperability first, not product completeness.
@@ -106,20 +106,16 @@ The Rust side is no longer just a codec experiment. It includes working client a
 ## Repository Layout
 - [`cmd/ssh3`](cmd/ssh3): original Go client binary
 - [`cmd/ssh3-server`](cmd/ssh3-server): original Go server binary
-- [`crates/ssh3-proto`](crates/ssh3-proto): wire format, messages, and forwarding headers
-- [`crates/ssh3-core`](crates/ssh3-core): conversation and channel runtime
-- [`crates/ssh3-quinn`](crates/ssh3-quinn): QUIC bindings
-- [`crates/ssh3-h3`](crates/ssh3-h3): HTTP/3 bootstrap and CONNECT handling
-- [`crates/ssh3-auth`](crates/ssh3-auth): public-key, password-adjacent helpers, and OIDC verification
-- [`crates/ssh3-client`](crates/ssh3-client): Rust client library and binary
-- [`crates/ssh3-server`](crates/ssh3-server): Rust server library and binary
 - [`internal/interop`](internal/interop): Go helpers used by the Rust real-binary interop suite
+- Rust implementation (protocol core, client and server): [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust) — extracted from this repository on 2026-10-21
 
 ## Building
 ### Rust
-Use a recent stable Rust toolchain.
+The Rust workspace now lives in its own repository, [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). Build and run it there:
 
 ```bash
+git clone https://github.com/nagual2/ssh3-rust.git
+cd ssh3-rust
 cargo build --workspace
 cargo run -p ssh3-client -- --help
 cargo run -p ssh3-server -- --help
@@ -154,7 +150,7 @@ CGO_ENABLED=1 go build -o ssh3-server ./cmd/ssh3-server
 
 ## Quickstart
 ### Local Rust server + Rust client
-The Rust server currently starts with a self-signed certificate, so the client example below uses `--insecure`.
+Run these in the [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust) checkout. The Rust server currently starts with a self-signed certificate, so the client example below uses `--insecure`.
 
 Start a local server:
 
@@ -774,15 +770,15 @@ oidc <client_id> <issuer_url> <email>
 ```
 
 ## Testing
-The Rust workspace is the primary verification path in this repository.
+The Rust workspace is the primary verification path of the Rust project; it lives in [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust) and is not built by this repository's CI.
 
-Run the full Rust suite:
+Run the full Rust suite (in the `ssh3-rust` checkout):
 
 ```bash
 cargo test
 ```
 
-Run the deepest Rust/Go interoperability matrix:
+Run the deepest Rust/Go interoperability matrix (requires the Go sources of this repository):
 
 ```bash
 cargo test -p ssh3-client

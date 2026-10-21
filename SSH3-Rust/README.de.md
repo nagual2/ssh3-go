@@ -6,7 +6,7 @@
 > SSH3 ist weiterhin experimentell, und der Protokollname kann sich noch ändern. Das Protokoll bleibt SSH-typische Sitzungs- und Kanalsemantik über QUIC und HTTP/3 Extended CONNECT, aber die Implementierung und das drumherum entwickeln sich weiter.
 
 > [!WARNING]
-> **Der Rust-Workspace unter `crates/` ist seit 2026-10-13 eingefroren (dormant)**: er wird nicht in CI gebaut, in keinem Release ausgeliefert, und die Audit-Fundstellen darin (F-16, F-20, der F-19-Client-Rest) sind mit dem Code eingefroren — keine Fixes geplant. Siehe `crates/FROZEN.md`. Das einzige ausgelieferte Produkt ist die Go-Implementierung.
+> **Der Rust-Workspace in diesem Repository ist seit 2026-10-13 eingefroren (dormant)**: er wird nicht in CI gebaut, in keinem Release ausgeliefert, und die Audit-Fundstellen darin (F-16, F-20, der F-19-Client-Rest) sind mit dem Code eingefroren — keine Fixes geplant. Siehe `FROZEN.md`. Das einzige ausgelieferte Produkt ist die Go-Implementierung.
 
 # SSH3 over HTTP/3
 [English](README.md) | [Русский](README.ru.md) | **Deutsch**
@@ -16,7 +16,7 @@ SSH3 abbildet RFC-4254-artige Sitzungssemantik auf QUIC, TLS 1.3 und HTTP/3 Exte
 Dieses Repository enthält derzeit zwei Implementierungen:
 
 - Den ursprünglichen Go-Client und -Server in [`cmd/ssh3`](cmd/ssh3) bzw. [`cmd/ssh3-server`](cmd/ssh3-server)
-- Ein laufendes Rust-Rewrite in [`crates/`](crates)
+- Ein laufendes Rust-Rewrite in [crates](.)
 
 > [!WARNING]
 > Betrachten Sie keine der Implementierungen als produktionsreif. Protokoll und Code befinden sich in aktiver Entwicklung; das Rust-Rewrite konzentriert sich in erster Linie auf Korrektheit und Interoperabilität, nicht auf Produktvollständigkeit.
@@ -106,13 +106,13 @@ Rust ist kein reines Codec-Experiment mehr: funktionierende Client- und Server-B
 ## Repository-Aufbau
 - [`cmd/ssh3`](cmd/ssh3): ursprünglicher Go-Client
 - [`cmd/ssh3-server`](cmd/ssh3-server): ursprünglicher Go-Server
-- [`crates/ssh3-proto`](crates/ssh3-proto): Wire-Format, Nachrichten und Forwarding-Header
-- [`crates/ssh3-core`](crates/ssh3-core): Conversations- und Channel-Runtime
-- [`crates/ssh3-quinn`](crates/ssh3-quinn): QUIC-Bindings
-- [`crates/ssh3-h3`](crates/ssh3-h3): HTTP/3-Bootstrap und CONNECT-Behandlung
-- [`crates/ssh3-auth`](crates/ssh3-auth): Public-Key- und passwortnahe Hilfen sowie OIDC-Verifizierung
-- [`crates/ssh3-client`](crates/ssh3-client): Rust-Client (Bibliothek und Binary)
-- [`crates/ssh3-server`](crates/ssh3-server): Rust-Server (Bibliothek und Binary)
+- [`ssh3-proto`](ssh3-proto): Wire-Format, Nachrichten und Forwarding-Header
+- [`ssh3-core`](ssh3-core): Conversations- und Channel-Runtime
+- [`ssh3-quinn`](ssh3-quinn): QUIC-Bindings
+- [`ssh3-h3`](ssh3-h3): HTTP/3-Bootstrap und CONNECT-Behandlung
+- [`ssh3-auth`](ssh3-auth): Public-Key- und passwortnahe Hilfen sowie OIDC-Verifizierung
+- [`ssh3-client`](ssh3-client): Rust-Client (Bibliothek und Binary)
+- [`ssh3-server`](ssh3-server): Rust-Server (Bibliothek und Binary)
 - [`internal/interop`](internal/interop): Go-Helfer für die Rust-Real-Binary-Interop-Suite
 
 ## Bauen

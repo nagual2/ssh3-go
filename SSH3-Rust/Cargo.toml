@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "ssh3-auth",
+    "ssh3-client",
+    "ssh3-core",
+    "ssh3-h3",
+    "ssh3-proto",
+    "ssh3-quinn",
+    "ssh3-server",
+]
+resolver = "3"
+
+[patch.crates-io]
+h3 = { path = "vendor/h3" }

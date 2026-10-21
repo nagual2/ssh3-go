@@ -6,17 +6,17 @@
 > SSH3 всё ещё экспериментальный, и имя протокола может измениться. Протокол сохраняет семантику сессий и каналов в стиле SSH поверх QUIC и HTTP/3 Extended CONNECT, но реализация и продуктовая обвязка продолжают развиваться.
 
 > [!WARNING]
-> **Rust-workspace в `crates/` заморожен (dormant) с 2026-10-13**: не собирается в CI, не входит ни в один релиз, аудиторские находки внутри (F-16, F-20, F-19-остаток клиента) заморожены вместе с кодом — в план фиксов не внесены. См. `crates/FROZEN.md`. Единственный поставляемый продукт — Go-реализация.
+> **Rust-реализация теперь живёт в отдельном репозитории**: [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). Она вынесена из этого репозитория 2026-10-21 и заморожена (dormant) с 2026-10-13 — не собирается в CI, не входит ни в один релиз, аудиторские находки (F-16, F-20, F-19-остаток клиента) заморожены вместе с кодом. Единственный поставляемый продукт — Go-реализация.
 
 # SSH3 over HTTP/3
 [English](README.md) | **Русский** | [Deutsch](README.de.md)
 
 SSH3 переносит семантику удалённых сессий в духе RFC 4254 на QUIC, TLS 1.3 и HTTP/3 Extended CONNECT. Цель проекта — сохранить привычные SSH-сценарии, добавив HTTP-нативную аутентификацию и транспортные возможности QUIC, такие как пересылка датаграмм.
 
-В репозитории сейчас две реализации:
+В этом репозитории лежит Go-реализация; рерайт на Rust вынесен в отдельный проект.
 
 - Оригинальные Go-клиент и Go-сервер в [`cmd/ssh3`](cmd/ssh3) и [`cmd/ssh3-server`](cmd/ssh3-server)
-- Развивающийся рерайт на Rust в [`crates/`](crates)
+- Развивающийся рерайт на Rust — в своём репозитории: [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust)
 
 > [!WARNING]
 > Не считайте ни одну из реализаций production-ready. Протокол и код активно разрабатываются, а рерайт на Rust сосредоточен в первую очередь на корректности и совместимости, а не на продуктовой полноте.
@@ -106,20 +106,16 @@ Rust уже не просто эксперимент с кодеками: там
 ## Структура репозитория
 - [`cmd/ssh3`](cmd/ssh3): оригинальный Go-клиент
 - [`cmd/ssh3-server`](cmd/ssh3-server): оригинальный Go-сервер
-- [`crates/ssh3-proto`](crates/ssh3-proto): формат сообщений, сообщения и заголовки форвардинга
-- [`crates/ssh3-core`](crates/ssh3-core): рантайм конвертаций и каналов
-- [`crates/ssh3-quinn`](crates/ssh3-quinn): привязки QUIC
-- [`crates/ssh3-h3`](crates/ssh3-h3): bootstrap HTTP/3 и обработка CONNECT
-- [`crates/ssh3-auth`](crates/ssh3-auth): публичные ключи, вспомогательное для паролей и проверка OIDC
-- [`crates/ssh3-client`](crates/ssh3-client): Rust-клиент (библиотека и бинарник)
-- [`crates/ssh3-server`](crates/ssh3-server): Rust-сервер (библиотека и бинарник)
 - [`internal/interop`](internal/interop): Go-помощники для real-binary interop-набора Rust
+- Rust-реализация (ядро протокола, клиент и сервер): [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust) — вынесена из этого репозитория 2026-10-21
 
 ## Сборка
 ### Rust
-Нужен недавний стабильный Rust.
+Rust-воркспейс живёт теперь в отдельном репозитории, [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). Собирать и запускать его нужно там:
 
 ```bash
+git clone https://github.com/nagual2/ssh3-rust.git
+cd ssh3-rust
 cargo build --workspace
 cargo run -p ssh3-client -- --help
 cargo run -p ssh3-server -- --help
@@ -154,7 +150,7 @@ CGO_ENABLED=1 go build -o ssh3-server ./cmd/ssh3-server
 
 ## Быстрый старт
 ### Локальные Rust-сервер + Rust-клиент
-Rust-сервер стартует с self-signed сертификатом, поэтому в примерах клиента используется `--insecure`.
+Примеры выполняются в клоне [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). Rust-сервер стартует с self-signed сертификатом, поэтому в примерах клиента используется `--insecure`.
 
 Запуск сервера:
 
@@ -775,15 +771,15 @@ oidc <client_id> <issuer_url> <email>
 ```
 
 ## Тестирование
-Rust-воркспейс — основной путь верификации в этом репозитории.
+Rust-воркспейс — основной путь верификации Rust-проекта; он живёт в [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust) и не собирается CI этого репозитория.
 
-Полный Rust-набор:
+Полный Rust-набор (в клоне `ssh3-rust`):
 
 ```bash
 cargo test
 ```
 
-Самая глубокая матрица совместимости Rust/Go:
+Самая глубокая матрица совместимости Rust/Go (нужны Go-исходники этого репозитория):
 
 ```bash
 cargo test -p ssh3-client

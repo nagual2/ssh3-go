@@ -6,17 +6,17 @@
 > SSH3 ist weiterhin experimentell, und der Protokollname kann sich noch ändern. Das Protokoll bleibt SSH-typische Sitzungs- und Kanalsemantik über QUIC und HTTP/3 Extended CONNECT, aber die Implementierung und das drumherum entwickeln sich weiter.
 
 > [!WARNING]
-> **Der Rust-Workspace unter `crates/` ist seit 2026-10-13 eingefroren (dormant)**: er wird nicht in CI gebaut, in keinem Release ausgeliefert, und die Audit-Fundstellen darin (F-16, F-20, der F-19-Client-Rest) sind mit dem Code eingefroren — keine Fixes geplant. Siehe `crates/FROZEN.md`. Das einzige ausgelieferte Produkt ist die Go-Implementierung.
+> **Die Rust-Implementierung liegt jetzt in einem eigenen Repository**: [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). Sie wurde am 2026-10-21 aus diesem Repository ausgelagert und ist seit 2026-10-13 eingefroren (dormant) — nicht in CI gebaut, in keinem Release ausgeliefert, die Audit-Fundstellen (F-16, F-20, der F-19-Client-Rest) mit dem Code eingefroren. Das einzige ausgelieferte Produkt ist die Go-Implementierung.
 
 # SSH3 over HTTP/3
 [English](README.md) | [Русский](README.ru.md) | **Deutsch**
 
 SSH3 abbildet RFC-4254-artige Sitzungssemantik auf QUIC, TLS 1.3 und HTTP/3 Extended CONNECT. Das Projekt möchte vertraute SSH-Workflows erhalten und gleichzeitig HTTP-native Authentifizierung und QUIC-native Transportfunktionen wie Datagram-Forwarding hinzufügen.
 
-Dieses Repository enthält derzeit zwei Implementierungen:
+Dieses Repository enthält die Go-Implementierung; das Rust-Rewrite liegt in einem eigenen Projekt.
 
 - Den ursprünglichen Go-Client und -Server in [`cmd/ssh3`](cmd/ssh3) bzw. [`cmd/ssh3-server`](cmd/ssh3-server)
-- Ein laufendes Rust-Rewrite in [`crates/`](crates)
+- Ein laufendes Rust-Rewrite, in ein eigenes Projekt ausgelagert: [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust)
 
 > [!WARNING]
 > Betrachten Sie keine der Implementierungen als produktionsreif. Protokoll und Code befinden sich in aktiver Entwicklung; das Rust-Rewrite konzentriert sich in erster Linie auf Korrektheit und Interoperabilität, nicht auf Produktvollständigkeit.
@@ -106,20 +106,16 @@ Rust ist kein reines Codec-Experiment mehr: funktionierende Client- und Server-B
 ## Repository-Aufbau
 - [`cmd/ssh3`](cmd/ssh3): ursprünglicher Go-Client
 - [`cmd/ssh3-server`](cmd/ssh3-server): ursprünglicher Go-Server
-- [`crates/ssh3-proto`](crates/ssh3-proto): Wire-Format, Nachrichten und Forwarding-Header
-- [`crates/ssh3-core`](crates/ssh3-core): Conversations- und Channel-Runtime
-- [`crates/ssh3-quinn`](crates/ssh3-quinn): QUIC-Bindings
-- [`crates/ssh3-h3`](crates/ssh3-h3): HTTP/3-Bootstrap und CONNECT-Behandlung
-- [`crates/ssh3-auth`](crates/ssh3-auth): Public-Key- und passwortnahe Hilfen sowie OIDC-Verifizierung
-- [`crates/ssh3-client`](crates/ssh3-client): Rust-Client (Bibliothek und Binary)
-- [`crates/ssh3-server`](crates/ssh3-server): Rust-Server (Bibliothek und Binary)
 - [`internal/interop`](internal/interop): Go-Helfer für die Rust-Real-Binary-Interop-Suite
+- Rust-Implementierung (Protokollkern, Client und Server): [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust) — am 2026-10-21 aus diesem Repository ausgelagert
 
 ## Bauen
 ### Rust
-Aktuelles stabiles Rust-Toolchain verwenden.
+Der Rust-Workspace liegt jetzt in einem eigenen Repository, [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). Dort wird er gebaut und ausgeführt:
 
 ```bash
+git clone https://github.com/nagual2/ssh3-rust.git
+cd ssh3-rust
 cargo build --workspace
 cargo run -p ssh3-client -- --help
 cargo run -p ssh3-server -- --help
@@ -153,7 +149,7 @@ CGO_ENABLED=1 go build -o ssh3-server ./cmd/ssh3-server
 
 ## Schnellstart
 ### Lokaler Rust-Server + Rust-Client
-Der Rust-Server startet derzeit mit einem selbstsignierten Zertifikat, daher nutzt das Client-Beispiel `--insecure`.
+Diese Beispiele laufen im Clone von [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust). Der Rust-Server startet derzeit mit einem selbstsignierten Zertifikat, daher nutzt das Client-Beispiel `--insecure`.
 
 Server starten:
 
@@ -802,15 +798,15 @@ oidc <client_id> <issuer_url> <email>
 ```
 
 ## Tests
-Der Rust-Workspace ist der primäre Verifikationsweg dieses Repositories.
+Der Rust-Workspace ist der primäre Verifikationsweg des Rust-Projekts; er liegt in [`nagual2/ssh3-rust`](https://github.com/nagual2/ssh3-rust) und wird von der CI dieses Repositories nicht gebaut.
 
-Volle Rust-Suite:
+Volle Rust-Suite (im Clone `ssh3-rust`):
 
 ```bash
 cargo test
 ```
 
-Die tiefste Rust/Go-Interop-Matrix:
+Die tiefste Rust/Go-Interop-Matrix (benötigt die Go-Quellen dieses Repositories):
 
 ```bash
 cargo test -p ssh3-client

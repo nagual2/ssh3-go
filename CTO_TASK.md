@@ -2,6 +2,7 @@
 
 > Task brief for an autonomous engineering agent working in this repository.
 > Fork lineage: `nagual2/ssh3-go` (renamed from nagual2/ssh3, 2026-10-05) ← `MatiasHiltunen/ssh3` (+13 commits, Rust rewrite) ← upstream `francoismichel/ssh3` (dormant since 2024-09-04, HEAD `5b4b242`).
+> The Rust rewrite was extracted into its own repository, `nagual2/ssh3-rust`, on 2026-10-21. This brief covers the Go implementation only.
 
 ## 1. Mission
 
@@ -12,8 +13,8 @@ Turn this SSH3 implementation into a transport that can be used as a **daily dri
 What already works (do not re-litigate, build on it):
 
 - Go client/server (`cmd/ssh3`, `cmd/ssh3-server`): pubkey auth (ed25519/P-256/RSA), shell, exec, PTY, OIDC, agent forwarding, TCP/UDP forwarding CLI, proxy jump, Let's Encrypt automation.
-- Rust workspace (`crates/`): protocol core, QUIC/H3 bootstrap, auth, client+server binaries, real-binary Rust↔Go interop test suite (`cargo test -p ssh3-client`).
-- `vendor/h3` is a **deliberate** `[patch.crates-io]` shim for `:protocol=ssh3` extended CONNECT; verified byte-identical to hyperium/h3 v0.0.8 except the shim. Do not swap it for upstream h3 until datagram/extended-CONNECT support lands upstream.
+- Rust implementation (extracted to `nagual2/ssh3-rust` on 2026-10-21): protocol core, QUIC/H3 bootstrap, auth, client+server binaries, real-binary Rust↔Go interop test suite (`cargo test -p ssh3-client` in that repository).
+- The `vendor/h3` **deliberate** `[patch.crates-io]` shim for `:protocol=ssh3` extended CONNECT moved with the Rust workspace to `nagual2/ssh3-rust/vendor/h3`; verified byte-identical to hyperium/h3 v0.0.8 except the shim. Do not swap it for upstream h3 until datagram/extended-CONNECT support lands upstream.
 - Security audit of the full delta vs upstream came back clean (static review of all `unsafe`/`exec`/network/file access points, supply-chain check of go.mod/go.sum/Cargo.lock — no git deps, all crates.io).
 - LAN benchmark (512 MiB random, WSL client → Atom x5-Z8350 server, USB btrfs destination): SSH3 push ≈ 28.5 MB/s, pull ≈ 24 MB/s; scp baseline ≈ 42.5 MB/s. Single QUIC stream, userspace crypto on a CPU without AES-NI.
 
@@ -33,12 +34,12 @@ CGO_ENABLED=0 GOOS=windows go build -tags disable_password_auth -ldflags "-s -w"
 
 ## 3. Ground rules
 
-1. Tests first (TDD). The Rust interop suite is the primary verification path; add a regression test for every bug fix below.
+1. Tests first (TDD). The Go test suite is the primary verification path in this repository; the Rust interop suite (in `nagual2/ssh3-rust`) covers the cross-implementation behaviour. Add a regression test for every bug fix below.
 2. Small PRs, conventional commits, one concern per PR.
-3. No new dependencies without justification in the PR description; Go deps must stay in go.mod/go.sum, Rust in Cargo.lock (registry sources only — no git dependencies).
+3. No new dependencies without justification in the PR description; Go deps must stay in go.mod/go.sum (registry sources only — no git dependencies).
 4. No telemetry, no network calls outside the SSH3 protocol semantics.
 5. Prefer file-backed secrets (`--password-file`, `--bearer-token-file`) over CLI args in new code.
-6. Both implementations must keep building after every PR: Go with the flags above, Rust with `cargo build --workspace`.
+6. The Go implementation must keep building after every PR, with the flags above. The Rust workspace moved to `nagual2/ssh3-rust` and is built there.
 
 ## 4. Stage 1 — Reliability (P0, do first)
 
@@ -61,7 +62,7 @@ Today "copy" is a stdin-pipe trick. Implement a proper file transfer channel:
 1. An SFTP-like subsystem multiplexed over an SSH3 channel (reuse the existing channel/request machinery; evaluate embedding a Go SFTP server implementation such as `github.com/pkg/sftp` over an `io.ReadWriteCloser` adapter to the channel — justify the dependency).
 2. Client UX: `ssh3 -f <local> <user@host:path>` upload/download, directory recursion, resume (`--continue`), preserve mode/timestamps (best effort), progress output, `--checksum` verification mode.
 3. Integrity by default: final hash comparison for transfers above a size threshold, mismatch → non-zero exit.
-4. Optional: expose the same over the Rust client CLI once the channel protocol is settled (Rust first as a library consumer, CLI flags second).
+4. Optional: expose the same over the Rust client CLI once the channel protocol is settled (Rust first as a library consumer, CLI flags second). Tracked in `nagual2/ssh3-rust`.
 
 Acceptance: copy a 1 GiB tree with subdirectories over a lossy link (simulate with `tc netem` 2% loss), resume works, checksums match, no server panics under interruption.
 
@@ -70,7 +71,7 @@ Acceptance: copy a 1 GiB tree with subdirectories over a lossy link (simulate wi
 Status 2026-10-02 (v0.1.22 release):
 
 1. Host key verification story: TOFU mode writing QUIC/TLS certificates to `~/.ssh3/known_hosts` (format already parsed by the client — `ssh3.ParseKnownHosts`), `strict` and `--insecure` explicitly logged as dangerous. Pin by certificate fingerprint, support SSHFP-like DNS records as stretch goal. — **done 2026-10-04 except SSHFP** (`StrictHostKeyChecking` ask|yes|accept-new|no with OpenSSH-style source priority; pins compared on the server certificate, changed fingerprint refuses with both fingerprints; SSHFP DNS remains a stretch goal)
-2. Rust CLI parity with Go: port forwarding flags (TCP/UDP direct + reverse), proxy jump, secret URL path. — **open (Rust track deferred beyond v0.1.22)**
+2. Rust CLI parity with Go: port forwarding flags (TCP/UDP direct + reverse), proxy jump, secret URL path. — **open, tracked in `nagual2/ssh3-rust` (Rust track deferred beyond v0.1.22)**
 3. `~/.ssh/config`: extend parsing to `ProxyJump`, `ForwardAgent`, `ServerAliveInterval`, `Include`, `Match` (currently only Hostname/User/Port/IdentityFile). — **done 2026-10-04** (ProxyJump honored as UDPProxyJump alias; Include resolves via ssh_config v1.2.0; Match resolved by the `client/config/matchcfg` pre-parser — all/final/host/originalhost/user/localuser/exec; `Match` inside `Include`d files is not resolved)
 4. Keepalives and connection migration sanity: NAT rebinding should not kill a session (QUIC gives this for free only if transport config enables migration — verify and test). — **done 2026-10-02 by inspection** (quic-go v0.63 always enables active migration — the Config knob was removed; keepalive default 1s, overridable via ServerAliveInterval)
 5. Server ops: graceful shutdown on SIGTERM (finish active channels, configurable drain), systemd hardening docs (unit example with `ProtectSystem`, `PrivateTmp`), log to journald-friendly output. — **done 2026-10-02** (SIGTERM drain via `SSH3_SHUTDOWN_DRAIN`, default 5s; JSON-to-journald under systemd; unit deliberately keeps OpenSSH parity without Protect* — see packaging/ssh3-server.service comment)
@@ -102,7 +103,7 @@ Increments (measurement-driven; re-run B1/B2 after each):
 |---|-----------|------------|
 | 1 | Profile harness: pprof hooks (opt-in flag) on client/server; quic-go-only microbench to separate transport ceiling from ssh3-layer overhead | hotspot profile committed to docs/ |
 | 2 | Transport tuning: GSO verification/activation, datagram size, flow-control windows and buffer sizes for bulk | B1 loopback improvement, each knob measured separately |
-| 3 | quic-go upgrade to current release, re-basing the deliberate vendor/h3 `:protocol=ssh3` shim | full Go + Rust interop suites green; B1/B2 re-measured |
+| 3 | quic-go upgrade to current release, re-basing the deliberate `vendor/h3` `:protocol=ssh3` shim in `nagual2/ssh3-rust` | full Go + Rust interop suites green (the Rust suite runs in `nagual2/ssh3-rust`); B1/B2 re-measured |
 | 4 | (conditional on profile) ssh3-layer copies/buffering fixes | B1 loopback ≥ 250 MB/s; LAN within 15% of scp |
 
 Non-goal: kernel TLS / crypto offload (impossible for QUIC). For no-AES-NI
@@ -132,7 +133,7 @@ Design (verified against the code on 2026-09-28):
 | 3 | Slave | Later invocations connect to the UDS, request a session; master opens a channel via `Client.OpenChannel("session", …)` on the live connection and bridges bytes both ways |
 | 4 | Refactor | Extract `RunSession`'s stdio pumping into a variant over `io.ReadWriteCloser` so the master can serve slave sessions without owning process stdio |
 | 5 | Keepalive | Master-owned keepalives against the QUIC idle timeout; connection migration is a free win |
-| 6 | Portability | Windows AF_UNIX works but is a separate test track; Rust client adopts the same protocol later (parity, non-blocking) |
+| 6 | Portability | Windows AF_UNIX works but is a separate test track; the Rust client (`nagual2/ssh3-rust`) adopts the same protocol later (parity, non-blocking) |
 
 Increments (TDD, each independently shippable):
 
