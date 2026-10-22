@@ -749,13 +749,7 @@ func ClientMain() int {
 	controlMasterOption := ""
 	controlPathOption := ""
 	controlPersistOption := ""
-	parsersByKeyword := make(map[string]client_config.OptionName)
-	for optionName, parser := range cliParsers {
-		keyword := strings.ToLower(parser.OptionConfigName())
-		if _, dup := parsersByKeyword[keyword]; !dup {
-			parsersByKeyword[keyword] = optionName
-		}
-	}
+	parsersByKeyword := optionParsersByKeyword(cliParsers)
 	for _, keyValuePair := range optionOverrides {
 		key, value, _ := strings.Cut(keyValuePair, "=")
 		key = strings.TrimSpace(key)
