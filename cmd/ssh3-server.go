@@ -962,7 +962,8 @@ func ServerMain() int {
 	urlPath := flag.String("url-path", "/ssh3-term", "the secret URL path on which the ssh3 server listens")
 	streamRxMiB := flag.Int("stream-rx-mb", 8, "initial per-stream flow control receive window in MiB")
 	connRxMiB := flag.Int("conn-rx-mb", 16, "initial connection-level flow control receive window in MiB")
-	initialPacketSize := flag.Int("initial-packet-size", 1350, "initial QUIC packet size in bytes")
+	initialPacketSize := flag.Int("initial-packet-size", 1200, "initial QUIC packet size in bytes (the QUIC minimum; "+
+		"the path MTU discovery grows it when the path allows)")
 	generateSelfSignedCert := flag.Bool("generate-selfsigned-cert", false, "if set, generates a self-self-signed cerificate and key "+
 		"that will be stored at the paths indicated by the -cert and -key args (they must not already exist)")
 	certPath := flag.String("cert", "./cert.pem", "the filename of the server certificate (or fullchain)")

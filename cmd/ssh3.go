@@ -96,17 +96,29 @@ const (
 	maxQUICPacketSize = 1452
 )
 
-// tunneledPacketSize returns the initial QUIC packet size of a connection
-// that is dialed through tunnelDepth proxy-jump hops. The budget of the
-// outer connection shrinks with every level, so the packet size shrinks too.
-func tunneledPacketSize(baseSize uint16, tunnelDepth int) (uint16, error) {
-	if tunnelDepth <= 0 {
-		return baseSize, nil
+// tunnelOuterSize returns the initial QUIC packet size of the outermost
+// connection of a proxy-jump chain of the given depth. Every level of
+// the chain eats tunnelDatagramOverhead bytes of the datagram budget of
+// the level below it, so the outermost connection takes a bigger packet
+// and the innermost level stays above the QUIC minimum. The size is
+// capped at the QUIC maximum, so a chain that does not fit is refused
+// instead of silently breaking.
+func tunnelOuterSize(baseSize uint16, tunnelDepth int) uint16 {
+	outer := int(baseSize) + tunnelDepth*tunnelDatagramOverhead
+	if outer > int(maxQUICPacketSize) {
+		outer = int(maxQUICPacketSize)
 	}
-	size := int(baseSize) - tunnelDepth*tunnelDatagramOverhead
+	return uint16(outer)
+}
+
+// tunneledPacketSize returns the initial QUIC packet size of the
+// connection at the given level of the chain (level 0 is the outermost
+// one, the level of the destination is the number of hops).
+func tunneledPacketSize(outerSize uint16, level int) (uint16, error) {
+	size := int(outerSize) - level*tunnelDatagramOverhead
 	if size < minQUICPacketSize {
-		return 0, fmt.Errorf("the proxy jump chain is too long for the QUIC datagram budget: %d hops need more than the %d-byte minimum packet size",
-			tunnelDepth, minQUICPacketSize)
+		return 0, fmt.Errorf("the proxy jump chain is too long for the QUIC datagram budget: %d levels need more than the %d-byte minimum packet size",
+			level, minQUICPacketSize)
 	}
 	return uint16(size), nil
 }
@@ -688,7 +700,8 @@ func ClientMain() int {
 	controlSocket := flag.String("S", "", "control master unix socket path (ssh2 -S; same as -control-path)")
 	identityFile := flag.String("i", "", "selects the private key file for public key authentication (ssh2 -i; same as -privkey)")
 	clientPort := flag.Int("p", 0, "port to connect to on the remote host (ssh2 -p; overrides -o Port, the operand port and ~/.ssh/config)")
-	packetSize := flag.Int("packet-size", 1350, "initial QUIC packet size in bytes")
+	packetSize := flag.Int("packet-size", 1200, "initial QUIC packet size in bytes (the QUIC minimum; "+
+		"the path MTU discovery grows it when the path allows)")
 	noPKCE := flag.Bool("no-pkce", false, "if set perform PKCE challenge-response with oidc")
 	proxyJump := flag.String("proxy-jump", "", "if set, performs a proxy jump using the specified remote host as proxy (deprecated alias of -J; requires server with version >= 0.1.5)")
 	jumpDestination := flag.String("J", "", "proxy jump: destination[,destination...] (ssh2 -J; every hop must run ssh3-server)")
@@ -1510,6 +1523,7 @@ func ClientMain() int {
 	// towards the final destination. The -p/-o Port and -o User overrides do
 	// not apply to the hops: each -J destination carries its own user@host.
 	var proxyAddress *net.UDPAddr
+	var outerSize uint16
 	proxyHopCount := 0
 	if proxyJumpResolved != "" {
 		hops, err := parseProxyJumpChain(proxyJumpResolved)
@@ -1518,6 +1532,7 @@ func ClientMain() int {
 			return -1
 		}
 		proxyHopCount = len(hops)
+		outerSize = tunnelOuterSize(uint16(*packetSize), proxyHopCount)
 		for hopIndex, hop := range hops {
 			hopUrl := hop
 			if !strings.HasPrefix(hopUrl, "https://") {
@@ -1537,7 +1552,7 @@ func ClientMain() int {
 			// travel as SSH3 datagrams of the outer connection, so its packet
 			// size has to leave room for the datagram framing
 			hopTuning := tuning
-			hopPacketSize, err := tunneledPacketSize(uint16(maxQUICPacketSize), hopIndex)
+			hopPacketSize, err := tunneledPacketSize(outerSize, hopIndex)
 			if err != nil {
 				log.Error().Msgf("%s", err)
 				return -1
@@ -1603,7 +1618,7 @@ func ClientMain() int {
 	// leave room for the datagram framing of every level
 	destinationTuning := tuning
 	if proxyJumpResolved != "" {
-		destinationPacketSize, err := tunneledPacketSize(uint16(maxQUICPacketSize), proxyHopCount)
+		destinationPacketSize, err := tunneledPacketSize(outerSize, proxyHopCount)
 		if err != nil {
 			log.Error().Msgf("%s", err)
 			return -1
