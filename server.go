@@ -180,10 +180,11 @@ func (s *Server) handleChannelStream(qconn *quic.Conn, stream *quic.Stream) {
 	}
 
 	log.Debug().Msgf(
-		"accepted SSH3 channel %d of type %q for control stream %d",
+		"accepted SSH3 channel %d of type %q for control stream %d, compression codec %d",
 		uint64(stream.StreamID()),
 		channelType,
 		conversationControlStreamID,
+		conversation.compressAlgorithm(),
 	)
 
 	channelInfo := &ChannelInfo{

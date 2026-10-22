@@ -437,6 +437,8 @@ func (c *Conversation) OpenChannel(channelType string, maxPacketSize uint64, dat
 		return nil, err
 	}
 	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), channelType, maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, c.compressAlgorithm(), nil)
+	log.Debug().Msgf("opening SSH3 channel %d of type %q, compression codec %d",
+		uint64(str.StreamID()), channelType, c.compressAlgorithm())
 	c.channelsManager.addChannel(channel)
 	return channel, nil
 }
