@@ -47,7 +47,9 @@ func Getspnam(name string) (*ShadowEntry, error) {
 
 	_, err := C.getspnam_r(cname, cspwd, buf, 1024, &cspwd)
 
-	if unsafe.Pointer(cspwd) == unsafe.Pointer(uintptr(0)) {
+	// the nil check is done on the typed pointer: converting a nil pointer
+	// through uintptr is flagged by go vet (possible misuse of unsafe.Pointer)
+	if cspwd == nil {
 		if err == nil {
 			err = util.UserNotFound{Username: name}
 		}
@@ -150,7 +152,7 @@ func getpwnam(name string) (*User, error) {
 		return nil, syscall.Errno(ret)
 	}
 
-	if unsafe.Pointer(cpasswd) == unsafe.Pointer(uintptr(0)) {
+	if cpasswd == nil {
 		if err == nil {
 			err = util.UserNotFound{Username: name}
 		}

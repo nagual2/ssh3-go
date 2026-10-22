@@ -69,6 +69,48 @@ type quicTuning struct {
 	MaxIncomingStreams int64
 }
 
+// The datagram budget of a proxy-jump hop: the QUIC packets of a tunneled
+// connection travel as SSH3 datagrams of the outer connection, and the
+// datagram payload must fit into the outer connection's QUIC packet budget
+// (quic-go sends a datagram only if it fits into a single packet: the
+// budget is the initial packet size minus the 37 bytes of packet overhead
+// it reserves). The SSH3 framing costs two varints per datagram (the
+// conversation and the channel id), so every tunnel level eats a few bytes
+// of the budget of the level below it. quic-go sizes the datagram budget
+// from the initial packet size and only grows it with the path MTU
+// discovery, which cannot help the very first datagram of a tunneled
+// connection: the budget has to be reserved upfront.
+const (
+	// tunnelDatagramOverhead is the per-level cost of the datagram budget:
+	// the QUIC packet overhead quic-go reserves on every packet (the type
+	// byte, the maximum connection id and the AEAD tag: 37 bytes in
+	// quic-go v0.63) plus the SSH3 datagram framing (the conversation id
+	// and the channel id varints), rounded up.
+	tunnelDatagramOverhead = 48
+	// minQUICPacketSize is the QUIC minimum: a smaller Initial packet is
+	// refused by the protocol (RFC 9000, section 14).
+	minQUICPacketSize = 1200
+	// maxQUICPacketSize is the QUIC maximum packet size (the payload of a
+	// 1500-byte MTU path): the outermost connection of a proxy-jump chain
+	// takes it, so that its datagram budget can carry the tunneled packets.
+	maxQUICPacketSize = 1452
+)
+
+// tunneledPacketSize returns the initial QUIC packet size of a connection
+// that is dialed through tunnelDepth proxy-jump hops. The budget of the
+// outer connection shrinks with every level, so the packet size shrinks too.
+func tunneledPacketSize(baseSize uint16, tunnelDepth int) (uint16, error) {
+	if tunnelDepth <= 0 {
+		return baseSize, nil
+	}
+	size := int(baseSize) - tunnelDepth*tunnelDatagramOverhead
+	if size < minQUICPacketSize {
+		return 0, fmt.Errorf("the proxy jump chain is too long for the QUIC datagram budget: %d hops need more than the %d-byte minimum packet size",
+			tunnelDepth, minQUICPacketSize)
+	}
+	return uint16(size), nil
+}
+
 // The ssh2 behavioral canon for timeouts (CTO_TASK §7c item 11): sshd never
 // kills an idle session (ClientAliveInterval=0) and gives the login 120 s
 // (LoginGraceTime). quic-go has no "unset" (a zero MaxIdleTimeout becomes its
@@ -149,6 +191,22 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 	}
 	qconf.Allow0RTT = true
 	qconf.EnableDatagrams = true
+	// the initial packet size drives the QUIC datagram budget: a datagram
+	// is only sent when it fits into a single packet (quic-go reserves 37
+	// bytes of packet overhead). The proxy-jump hops rely on it: the
+	// tunneled packets travel as datagrams of the outer connection.
+	if tuning.InitialPacketSize >= minQUICPacketSize {
+		qconf.InitialPacketSize = tuning.InitialPacketSize
+	}
+	if proxyRemoteAddr != nil {
+		// A tunneled connection must not grow its packets: the path MTU
+		// discovery would push them to the QUIC maximum (1452 bytes), and
+		// the datagram carrying them would no longer fit into a single
+		// packet of the outer connection (the datagram budget of the outer
+		// connection is the outer initial packet size minus the packet
+		// overhead). The tunnel therefore keeps the initial packet size.
+		qconf.DisablePathMTUDiscovery = true
+	}
 	qconf.KeepAlivePeriod = time.Second
 	if tuning.KeepAlivePeriod > 0 {
 		qconf.KeepAlivePeriod = tuning.KeepAlivePeriod
@@ -749,13 +807,7 @@ func ClientMain() int {
 	controlMasterOption := ""
 	controlPathOption := ""
 	controlPersistOption := ""
-	parsersByKeyword := make(map[string]client_config.OptionName)
-	for optionName, parser := range cliParsers {
-		keyword := strings.ToLower(parser.OptionConfigName())
-		if _, dup := parsersByKeyword[keyword]; !dup {
-			parsersByKeyword[keyword] = optionName
-		}
-	}
+	parsersByKeyword := optionParsersByKeyword(cliParsers)
 	for _, keyValuePair := range optionOverrides {
 		key, value, _ := strings.Cut(keyValuePair, "=")
 		key = strings.TrimSpace(key)
@@ -1458,12 +1510,14 @@ func ClientMain() int {
 	// towards the final destination. The -p/-o Port and -o User overrides do
 	// not apply to the hops: each -J destination carries its own user@host.
 	var proxyAddress *net.UDPAddr
+	proxyHopCount := 0
 	if proxyJumpResolved != "" {
 		hops, err := parseProxyJumpChain(proxyJumpResolved)
 		if err != nil {
 			log.Error().Msgf("%s", err)
 			return -1
 		}
+		proxyHopCount = len(hops)
 		for hopIndex, hop := range hops {
 			hopUrl := hop
 			if !strings.HasPrefix(hopUrl, "https://") {
@@ -1476,10 +1530,20 @@ func ClientMain() int {
 			}
 			proxyAgentClient, proxyOptions, err := getConnectionMaterialFromURL(proxyParsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers, 0, "")
 			if err != nil {
-				log.Error().Msgf("Could not get connection material for proxy %s: %s", proxyParsedUrl, err)
+				log.Error().Msgf("Could not get connection material for proxy %s: %s", hopUrl, err)
 				return -1
 			}
-			qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, proxyAddress, tty, tuning, addressFamily)
+			// the hop is dialed through the previous hops: its QUIC packets
+			// travel as SSH3 datagrams of the outer connection, so its packet
+			// size has to leave room for the datagram framing
+			hopTuning := tuning
+			hopPacketSize, err := tunneledPacketSize(uint16(maxQUICPacketSize), hopIndex)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			hopTuning.InitialPacketSize = hopPacketSize
+			qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, proxyAddress, tty, hopTuning, addressFamily)
 
 			if qconn == nil {
 				if status != 0 {
@@ -1534,7 +1598,20 @@ func ClientMain() int {
 		}
 	}
 
-	qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, tuning, addressFamily)
+	// the destination is dialed through every proxy hop: its QUIC packets
+	// travel as SSH3 datagrams of the last hop, so its packet size has to
+	// leave room for the datagram framing of every level
+	destinationTuning := tuning
+	if proxyJumpResolved != "" {
+		destinationPacketSize, err := tunneledPacketSize(uint16(maxQUICPacketSize), proxyHopCount)
+		if err != nil {
+			log.Error().Msgf("%s", err)
+			return -1
+		}
+		destinationTuning.InitialPacketSize = destinationPacketSize
+	}
+
+	qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, destinationTuning, addressFamily)
 
 	if qconn == nil {
 		if status != 0 {

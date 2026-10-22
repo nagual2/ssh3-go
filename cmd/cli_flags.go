@@ -11,12 +11,42 @@ import (
 	"net"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
 	ssh3 "github.com/francoismichel/ssh3"
 	"github.com/francoismichel/ssh3/client"
+	client_config "github.com/francoismichel/ssh3/client/config"
 )
+
+// optionParsersByKeyword maps the configuration keywords of the registered
+// option parsers (the auth plugins) to the option name that serves them.
+//
+// The mapping has to be deterministic: the option parsers live in a map, so
+// the iteration order changes from run to run. Two parsers claim the
+// IdentityFile keyword - the privkey plugin (a private key file) and the
+// agent plugin (a public key file) - and a random winner made -i and
+// -o IdentityFile= work only half of the time. The ssh(1) canon settles it:
+// IdentityFile names a private key file, so the privkey plugin owns the
+// keyword; the agent plugin keeps its own -pubkey-for-agent flag. The option
+// names are therefore visited in sorted order, which puts "privkey" first.
+func optionParsersByKeyword(cliParsers map[client_config.OptionName]client_config.CLIOptionParser) map[string]client_config.OptionName {
+	optionNames := make([]string, 0, len(cliParsers))
+	for optionName := range cliParsers {
+		optionNames = append(optionNames, string(optionName))
+	}
+	sort.Strings(optionNames)
+
+	parsersByKeyword := make(map[string]client_config.OptionName, len(optionNames))
+	for _, optionName := range optionNames {
+		keyword := strings.ToLower(cliParsers[client_config.OptionName(optionName)].OptionConfigName())
+		if _, dup := parsersByKeyword[keyword]; !dup {
+			parsersByKeyword[keyword] = client_config.OptionName(optionName)
+		}
+	}
+	return parsersByKeyword
+}
 
 // dynamicForwardSpec is a parsed -D value: the local SOCKS listener to open.
 type dynamicForwardSpec struct {

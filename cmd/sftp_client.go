@@ -25,8 +25,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Client side of the file-transfer mode: `ssh3 -f SRC DST` with exactly one
-// scp-style operand `user@host:remote_path`; the other operand is local.
+// Client side of the file-transfer mode: `ssh3 -transfer SRC DST` with
+// exactly one scp-style operand `user@host:remote_path`; the other operand is
+// local. The transfer mode lives under the -transfer long form since the
+// CLI-parity wave (CTO_TASK §7c row 1): -f is the ssh(1) background flag now.
 
 type transferTarget struct {
 	username   string

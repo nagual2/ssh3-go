@@ -1307,11 +1307,12 @@ func ServerMain() int {
 		// explicit resource posture (S2-06): the defaults below equal the
 		// quic-go defaults, but are now documented operator knobs rather than
 		// an invisible library choice
-		MaxIdleTimeout:        time.Duration(maxIdleTimeoutSecs) * time.Second,
-		HandshakeIdleTimeout:  time.Duration(handshakeIdleTimeoutSecs) * time.Second,
-		MaxIncomingStreams:    int64(maxIncomingStreams),
-		MaxIncomingUniStreams: int64(maxIncomingUniStreams),
-		InitialPacketSize:     uint16(*initialPacketSize),
+		MaxIdleTimeout:          time.Duration(maxIdleTimeoutSecs) * time.Second,
+		HandshakeIdleTimeout:    time.Duration(handshakeIdleTimeoutSecs) * time.Second,
+		MaxIncomingStreams:      int64(maxIncomingStreams),
+		MaxIncomingUniStreams:   int64(maxIncomingUniStreams),
+		InitialPacketSize:       uint16(*initialPacketSize),
+		DisablePathMTUDiscovery: true,
 	}
 
 	var err error

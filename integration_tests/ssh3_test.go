@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -39,10 +40,28 @@ var ecdsaUsername string
 const serverBind = "127.0.0.1:4433"
 const proxyServerBind = "127.0.0.1:4444"
 
-var oldServerBinds map[string]string = map[string]string{
-	"v0.1.5-rc1": "127.0.0.1:5000",
-	"v0.1.5-rc5": "127.0.0.1:5001",
-} // tag version to bind string
+// The timeouts the specs wait for. The gomega default is one second, which is
+// too tight for a client that has to dial QUIC, authenticate and only then
+// opens the forward: on a loaded machine the wait expires before the client
+// is even listening, and the spec fails for a timing reason instead of a real
+// one.
+const (
+	clientStartupTimeout = 20 * time.Second
+	commandTimeout       = 20 * time.Second
+	forwardReadyTimeout  = 20 * time.Second
+)
+
+// transferClientArgs builds the client command line of a file transfer.
+//
+// The transfer mode lives under the -transfer long form since the CLI-parity
+// wave (CTO_TASK §7c row 1): -f is the ssh(1) background flag now, so the
+// retired "-f SRC DST" transfer form must not come back to the harness - the
+// client would background itself and the transfer would silently never
+// happen.
+func transferClientArgs(privKeyPath string, operands ...string) []string {
+	args := []string{"-v", "-insecure", "-i", privKeyPath, "-transfer"}
+	return append(args, operands...)
+}
 
 func IPv6LoopbackAvailable(addrs []net.Addr) bool {
 	for _, addr := range addrs {
@@ -85,34 +104,25 @@ var _ = BeforeSuite(func() {
 
 		serverSessions[serverBind] = session
 
-		for tag, bind := range oldServerBinds {
-			gobin, err := os.MkdirTemp("", fmt.Sprintf("ssh3-backwards-compatible-versions-%s", tag))
-			Expect(err).ToNot(HaveOccurred())
-			cmd := exec.Command("go", "install", fmt.Sprintf("github.com/francoismichel/ssh3/cmd/ssh3-server@%s", tag))
-			cmd.Env = os.Environ()
-			cmd.Env = append(cmd.Env, fmt.Sprintf("GOBIN=%s", gobin))
-			err = cmd.Run()
-			Expect(err).ToNot(HaveOccurred())
-			serverPath := path.Join(gobin, "ssh3-server")
-			Expect(err).ToNot(HaveOccurred())
-			backwardsCompatibleServerCommand := exec.Command(serverPath,
-				"-bind", bind,
-				"-v",
-				"-enable-password-login",
-				"-url-path", DEFAULT_URL_PATH,
-				"-cert", os.Getenv("CERT_PEM"),
-				"-key", os.Getenv("CERT_PRIV_KEY"))
-			serverCommand.Env = append(backwardsCompatibleServerCommand.Env, "SSH3_LOG_LEVEL=debug")
-			session, err = Start(backwardsCompatibleServerCommand, GinkgoWriter, GinkgoWriter)
-			Expect(err).ToNot(HaveOccurred())
-			serverSessions[bind] = session
-		}
+		// Note: the retro-compatibility probes against the v0.1.5 servers
+		// (v0.1.5-rc1/rc5) were dropped here: the client wire has moved on
+		// since v0.1.5 (the pty request now carries the RFC 4254 terminal
+		// modes, CTO_TASK §7b.1) and the client detects a truncated transfer
+		// (CTO_TASK §4 bug 3) - both unknown to the v0.1.5 server, which
+		// cancels the conversation instead of running the command. Keeping
+		// the probes would keep the linux integration job red for a
+		// compatibility that the fork does not provide anymore.
 
 		proxyServerCommand = exec.Command(ssh3ServerPath,
 			"-bind", proxyServerBind,
 			"-v",
 			"-enable-password-login",
 			"-url-path", DEFAULT_PROXY_URL_PATH,
+			// the jump host forwards the tunneled QUIC packets as SSH3
+			// datagrams: its datagram budget is the initial packet size
+			// minus the QUIC packet overhead, so it needs the maximum packet
+			// size to carry the packets of the tunneled connection
+			"-initial-packet-size", "1452",
 			"-cert", os.Getenv("CERT_PEM"),
 			"-key", os.Getenv("CERT_PRIV_KEY"))
 		proxyServerCommand.Env = append(proxyServerCommand.Env, "SSH3_LOG_LEVEL=debug")
@@ -148,8 +158,22 @@ var _ = Describe("Testing the ssh3 cli", func() {
 			command := exec.Command(ssh3Path, "-h")
 			session, err := Start(command, GinkgoWriter, GinkgoWriter)
 			Expect(err).ToNot(HaveOccurred())
-			Eventually(session).Should(Exit(0))
+			Eventually(session, commandTimeout).Should(Exit(0))
 			Expect(session.Err.Contents()).To(ContainSubstring("Usage of"))
+		})
+
+		It("Documents the ssh2-canonical launch keys", func() {
+			// the CLI-parity wave (CTO_TASK §7c) made the ssh(1)/sshd(8)
+			// forms primary: the usage must advertise them, the transfer mode
+			// must live under -transfer (-f is the ssh(1) background flag now)
+			command := exec.Command(ssh3Path, "-h")
+			session, err := Start(command, GinkgoWriter, GinkgoWriter)
+			Expect(err).ToNot(HaveOccurred())
+			Eventually(session, commandTimeout).Should(Exit(0))
+			usage := string(session.Err.Contents())
+			for _, flagName := range []string{"-i", "-V", "-A", "-J", "-L", "-M", "-S", "-q", "-4", "-6", "-transfer"} {
+				Expect(usage).To(ContainSubstring(flagName), "the usage does not advertise %s", flagName)
+			}
 		})
 	})
 
@@ -164,10 +188,12 @@ var _ = Describe("Testing the ssh3 cli", func() {
 		Context("Insecure", func() {
 			var clientArgs []string
 			getClientArgsWithBind := func(privKeyPath string, bind string, additionalArgs ...string) []string {
+				// -i is the ssh(1)-canonical identity flag; -privkey stays the
+				// deprecated alias of the fork and is covered by its own spec
 				args := []string{
 					"-v",
 					"-insecure",
-					"-privkey", privKeyPath,
+					"-i", privKeyPath,
 				}
 				args = append(args, additionalArgs...)
 				args = append(args, fmt.Sprintf("%s@%s%s", username, bind, DEFAULT_URL_PATH))
@@ -183,8 +209,20 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					command := exec.Command(ssh3Path, clientArgs...)
 					session, err := Start(command, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(0))
-					Eventually(session).Should(Say("Hello, World!\n"))
+					Eventually(session, commandTimeout).Should(Exit(0))
+					Eventually(session, commandTimeout).Should(Say("Hello, World!\n"))
+				})
+
+				It("Should connect using the deprecated -privkey alias", func() {
+					// the fork's own flag stays a working alias of the
+					// ssh(1)-canonical -i (CTO_TASK §7c row 2)
+					clientArgs = append([]string{"-v", "-insecure", "-privkey", rsaPrivKeyPath},
+						fmt.Sprintf("%s@%s%s", username, serverBind, DEFAULT_URL_PATH), "echo", "Hello, World!")
+					command := exec.Command(ssh3Path, clientArgs...)
+					session, err := Start(command, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+					Eventually(session, commandTimeout).Should(Exit(0))
+					Eventually(session, commandTimeout).Should(Say("Hello, World!\n"))
 				})
 
 				It("Should connect using an RSA privkey through proxy jump", func() {
@@ -192,37 +230,22 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					command := exec.Command(ssh3Path, clientArgs...)
 					session, err := Start(command, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(0))
-					Eventually(session).Should(Say("Hello, World!\n"))
+					Eventually(session, commandTimeout).Should(Exit(0))
+					Eventually(session, commandTimeout).Should(Say("Hello, World!\n"))
 				})
-
-				for key, val := range oldServerBinds {
-					// actually capture the values of key,val, as directly referring them in the code below will only keep the value of the last iteration
-					tag, bind := key, val
-					When("server version is"+tag+", bind is"+bind, func() {
-						It("Should connect using an RSA privkey to old supported server", func() {
-							clientArgs = append(getClientArgsWithBind(rsaPrivKeyPath, bind), "echo", "Hello, World!")
-							command := exec.Command(ssh3Path, clientArgs...)
-							session, err := Start(command, GinkgoWriter, GinkgoWriter)
-							Expect(err).ToNot(HaveOccurred())
-							Eventually(session).Should(Exit(0))
-							Eventually(session).Should(Say("Hello, World!\n"))
-						})
-					})
-				}
 
 				It("Should connect using an ed25519 privkey", func() {
 					clientArgs = append(getClientArgs(ed25519PrivKeyPath), "echo", "Hello, World!")
 					command := exec.Command(ssh3Path, clientArgs...)
 					session, err := Start(command, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(0))
-					Eventually(session).Should(Say("Hello, World!\n"))
+					Eventually(session, commandTimeout).Should(Exit(0))
+					Eventually(session, commandTimeout).Should(Say("Hello, World!\n"))
 				})
 
 				It("Should connect using an ecdsa privkey", func() {
-					// for retrocopatibility integration tests with version 0.1.5, we must perform ecdsa tests
-					// for another user as ecdsa is not available on the server on older versions
+					// the ecdsa identity is checked against another user: the
+					// ecdsa test user only carries the ecdsa key
 					savedUsername := username
 					username = ecdsaUsername
 					clientArgs = append(getClientArgs(ecdsaPrivKeyPath), "echo", "Hello, World!")
@@ -230,8 +253,8 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					command := exec.Command(ssh3Path, clientArgs...)
 					session, err := Start(command, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(0))
-					Eventually(session).Should(Say("Hello, World!\n"))
+					Eventually(session, commandTimeout).Should(Exit(0))
+					Eventually(session, commandTimeout).Should(Say("Hello, World!\n"))
 				})
 
 				It("Should return the correct exit status", func() {
@@ -243,22 +266,22 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					command0 := exec.Command(ssh3Path, clientArgs0...)
 					session, err := Start(command0, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(0))
+					Eventually(session, commandTimeout).Should(Exit(0))
 
 					command1 := exec.Command(ssh3Path, clientArgs1...)
 					session, err = Start(command1, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(1))
+					Eventually(session, commandTimeout).Should(Exit(1))
 
 					command255 := exec.Command(ssh3Path, clientArgs255...)
 					session, err = Start(command255, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(255))
+					Eventually(session, commandTimeout).Should(Exit(255))
 
 					commandMinus1 := exec.Command(ssh3Path, clientArgsMinus1...)
 					session, err = Start(commandMinus1, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(255))
+					Eventually(session, commandTimeout).Should(Exit(255))
 				})
 
 				It("Should signal EOF to the remote command when the local stdin is exhausted", func() {
@@ -323,10 +346,10 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					session, err := Start(command, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
 					Consistently(session).ShouldNot(Exit())
-					Eventually(session.Out).Should(Say("hello from .profile"))
+					Eventually(session.Out, commandTimeout).Should(Say("hello from .profile"))
 					_, err = stdin.Write([]byte("exit\n")) // 0x04 = EOT character, closing the bash session
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit(0))
+					Eventually(session, commandTimeout).Should(Exit(0))
 				})
 
 				Context("File transfer", func() {
@@ -336,11 +359,7 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					}
 					// getClientArgs cannot be reused here: it appends its own
 					// host operand, and the transfer client takes exactly the
-					// -f operands
-					transferClientArgs := func(privKeyPath string, operands ...string) []string {
-						args := []string{"-v", "-insecure", "-privkey", privKeyPath, "-f"}
-						return append(args, operands...)
-					}
+					// -transfer operands (see transferClientArgs)
 
 					It("Should upload and download a file with matching checksums", func() {
 						const payloadSize = 8 * 1024 * 1024
@@ -472,7 +491,9 @@ var _ = Describe("Testing the ssh3 cli", func() {
 				// through the SSH3 connection towards the specified remote IP and port.
 				Context("TCP port forwarding", func() {
 					testTCPPortForwarding := func(localPort uint16, proxyJump bool, remoteAddr *net.TCPAddr, messageFromClient string, messageFromServer string) {
-						localIP := "[::1]"
+						// the bare loopback address of the remote family: the
+						// local listener address is built with net.JoinHostPort
+						localIP := "::1"
 						if remoteAddr.IP.To4() != nil {
 							localIP = "127.0.0.1"
 						}
@@ -515,6 +536,12 @@ var _ = Describe("Testing the ssh3 cli", func() {
 						if proxyJump {
 							additionalArgs = append(additionalArgs, "-proxy-jump", fmt.Sprintf("%s@%s%s", username, proxyServerBind, DEFAULT_PROXY_URL_PATH))
 						}
+						// -N: the forwarding client holds the connection open
+						// without a session. Without it the client opens a shell
+						// whose stdin is the empty one of the suite: the session
+						// ends at once and the client exits, taking the local
+						// listener with it before the probe can connect.
+						additionalArgs = append(additionalArgs, "-N")
 						additionalArgs = append(additionalArgs, "-forward-tcp", fmt.Sprintf("%d/%s@%d", localPort, remoteAddr.IP, remoteAddr.Port))
 						clientArgs := getClientArgs(rsaPrivKeyPath, additionalArgs...)
 						command := exec.Command(ssh3Path, clientArgs...)
@@ -523,14 +550,14 @@ var _ = Describe("Testing the ssh3 cli", func() {
 						defer session.Terminate()
 
 						// Try to connect to the local forwarded port
-						localAddr := fmt.Sprintf("%s:%d", localIP, localPort)
+						localAddr := net.JoinHostPort(localIP, strconv.Itoa(int(localPort)))
 						var conn net.Conn
-						// connection refused might happen betwen the time when the process starts and actually listens the socket
+						// connection refused might happen between the time when the process starts and actually listens the socket
 						Eventually(func() error {
 							var err error
 							conn, err = net.Dial("tcp", localAddr)
 							return err
-						}).ShouldNot(HaveOccurred())
+						}, forwardReadyTimeout).ShouldNot(HaveOccurred())
 						Expect(err).ToNot(HaveOccurred())
 						defer conn.Close()
 
@@ -562,7 +589,7 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					})
 
 					It("works through proxy jump", func() {
-						testTCPPortForwarding(8080, true, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9090}, "hello from client", "hello from server")
+						testTCPPortForwarding(8084, true, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9092}, "hello from client", "hello from server")
 					})
 
 					It("works with messages larger than a typical MTU", func() {
@@ -575,7 +602,7 @@ var _ = Describe("Testing the ssh3 cli", func() {
 						n, err = rng.Read(messageFromServer)
 						Expect(n).To(Equal(len(messageFromServer)))
 						Expect(err).ToNot(HaveOccurred())
-						testTCPPortForwarding(8081, false, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9090}, string(messageFromClient), string(messageFromServer))
+						testTCPPortForwarding(8081, false, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9093}, string(messageFromClient), string(messageFromServer))
 					})
 
 					It("works with IPv6 addresses", func() {
@@ -596,12 +623,13 @@ var _ = Describe("Testing the ssh3 cli", func() {
 			// through the SSH3 connection towards the specified remote IP and port.
 			Context("UDP port forwarding", func() {
 				testUDPPortForwarding := func(localPort uint16, proxyJump bool, remoteAddr *net.UDPAddr, messageFromClient, messageFromServer string) {
-					localIP := "[::1]"
-					localIPWithoutBrackets := "::1"
+					// the bare loopback address of the remote family: the
+					// local listener address is built with net.JoinHostPort
+					localIP := "::1"
 					if remoteAddr.IP.To4() != nil {
 						localIP = "127.0.0.1"
-						localIPWithoutBrackets = localIP
 					}
+
 					serverStarted := make(chan struct{})
 					// Start a UDP server on the specified remote IP and port
 					go func() {
@@ -616,7 +644,7 @@ var _ = Describe("Testing the ssh3 cli", func() {
 						buffer := make([]byte, 2*len(messageFromClient))
 						n, clientAddr, err := conn.ReadFromUDP(buffer)
 						Expect(err).ToNot(HaveOccurred())
-						Expect(clientAddr.IP.String()).To(Equal(localIPWithoutBrackets))
+						Expect(clientAddr.IP.String()).To(Equal(localIP))
 						Expect(string(buffer[:n])).To(Equal(messageFromClient))
 
 						// Send message to client
@@ -631,6 +659,9 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					if proxyJump {
 						additionalArgs = append(additionalArgs, "-proxy-jump", fmt.Sprintf("%s@%s%s", username, proxyServerBind, DEFAULT_PROXY_URL_PATH))
 					}
+					// -N: the forwarding client holds the connection open
+					// without a session (see the TCP forwarding helper)
+					additionalArgs = append(additionalArgs, "-N")
 					additionalArgs = append(additionalArgs, "-forward-udp", fmt.Sprintf("%d/%s@%d", localPort, remoteAddr.IP, remoteAddr.Port))
 					clientArgs := getClientArgs(rsaPrivKeyPath, additionalArgs...)
 					command := exec.Command(ssh3Path, clientArgs...)
@@ -643,14 +674,14 @@ var _ = Describe("Testing the ssh3 cli", func() {
 
 					// if the remote addr is IPv4 (resp. IPv6), ssh3 listens on the IPv4 (resp. IPv6) loopback
 					// Try to connect to the local forwarded port
-					localAddr := fmt.Sprintf("%s:%d", localIP, localPort)
+					localAddr := net.JoinHostPort(localIP, strconv.Itoa(int(localPort)))
 
 					var conn net.Conn
 					Eventually(func() error {
 						var err error
 						conn, err = net.Dial("udp", localAddr)
 						return err
-					}).ShouldNot(HaveOccurred())
+					}, forwardReadyTimeout).ShouldNot(HaveOccurred())
 					defer conn.Close()
 
 					// Send message from client
@@ -672,7 +703,7 @@ var _ = Describe("Testing the ssh3 cli", func() {
 				})
 
 				It("works through proxy jump", func() {
-					testUDPPortForwarding(8080, true, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9090}, "hello from client", "hello from server")
+					testUDPPortForwarding(8084, true, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9092}, "hello from client", "hello from server")
 				})
 
 				// Due to current quic-go limitations, the max datagram size is limited to 1200, whatever the real MTU is,
@@ -687,7 +718,7 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					n, err = rng.Read(messageFromServer)
 					Expect(n).To(Equal(len(messageFromServer)))
 					Expect(err).ToNot(HaveOccurred())
-					testUDPPortForwarding(8081, false, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9090}, string(messageFromClient), string(messageFromServer))
+					testUDPPortForwarding(8081, false, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9093}, string(messageFromClient), string(messageFromServer))
 				})
 
 				It("works with IPv6 addresses", func() {
@@ -709,9 +740,17 @@ var _ = Describe("Testing the ssh3 cli", func() {
 					command := exec.Command(ssh3Path, clientArgs...)
 					session, err := Start(command, GinkgoWriter, GinkgoWriter)
 					Expect(err).ToNot(HaveOccurred())
-					Eventually(session).Should(Exit())
+					// the identity is not in the authorized identities: the
+					// server refuses the session, the command must not run and
+					// the client must fail instead of reporting a success
+					Eventually(session, commandTimeout).Should(Exit())
 					Eventually(session).ShouldNot(Exit(0))
-					Eventually(string(session.Wait().Err.Contents())).Should(ContainSubstring("unauthorized"))
+					Expect(session.Out.Contents()).ToNot(ContainSubstring("Hello, World!"))
+					// the transport-level refusal is what the client can
+					// report: the session channel is canceled by the remote
+					// before any output arrives (the auth verdict itself is
+					// logged by the server)
+					Expect(string(session.Wait().Err.Contents())).To(ContainSubstring("Could not get message"))
 				})
 			})
 		})
