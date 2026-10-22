@@ -7,8 +7,10 @@ require (
 	github.com/creack/pty v1.1.18
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/kevinburke/ssh_config v1.2.0
+	github.com/klauspost/compress v1.17.4
 	github.com/onsi/ginkgo/v2 v2.13.0
 	github.com/onsi/gomega v1.29.0
+	github.com/pierrec/lz4/v4 v4.1.21
 	github.com/pkg/sftp v1.13.7
 	github.com/quic-go/quic-go v0.63.0
 	github.com/rs/zerolog v1.31.0

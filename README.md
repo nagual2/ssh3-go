@@ -88,6 +88,7 @@ The Rust side is no longer just a codec experiment. It includes working client a
 | Capability | Go CLI/server | Rust workspace | Notes |
 | --- | --- | --- | --- |
 | QUIC + HTTP/3 SSH3 transport | Yes | Yes | Rust uses `quinn` plus a patched vendored `h3` crate. |
+| Channel body compression | Yes | No | The version string announces the codecs the endpoint can decode (deflate, lz4, zstd); a compressed frame is the message type 192. Both ends compress, and a peer that announces nothing gets the plain frames. |
 | Session shell and exec | Yes | Yes | Covered by unit and real-binary interop tests. |
 | PTY shell, resize, and signal forwarding | Yes | Yes | Real-binary resize and signal interop are covered in both directions. Windows clients get a PTY with a fixed 80x24 fallback geometry. |
 | Public-key auth | Yes | Yes | Ed25519, P-256, and RSA are covered. |

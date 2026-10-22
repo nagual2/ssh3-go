@@ -58,9 +58,8 @@ type Conversation struct {
 // compressAlgorithm returns the codec of the compressed data frames of
 // this conversation: the algorithm both sides derive from the
 // capability the peer announced in its version string (the compression
-// of the channel body, PLAN.md 9 B8).  The server side of the fork
-// keeps the plain frames for now - the decoder of the message layer
-// understands the compressed frames either way.
+// of the channel body, PLAN.md 9 B8).  A peer that announced nothing
+// gets the plain frames.
 func (c *Conversation) compressAlgorithm() uint64 {
 	return compress.Choose(c.peerVersion.GetCompressAlgorithms())
 }
@@ -351,7 +350,7 @@ func (c *Conversation) handleIncomingChannelStream(stream *quic.Stream) {
 		MaxPacketSize:        maxPacketSize,
 	}
 
-	newChannel := NewChannel(channelInfo.ConversationStreamID, channelInfo.ConversationID, uint64(stream.StreamID()), channelInfo.ChannelType, channelInfo.MaxPacketSize, stream, stream, nil, c.channelsManager, false, false, true, c.defaultDatagramsQueueSize, 0, nil)
+	newChannel := NewChannel(channelInfo.ConversationStreamID, channelInfo.ConversationID, uint64(stream.StreamID()), channelInfo.ChannelType, channelInfo.MaxPacketSize, stream, stream, nil, c.channelsManager, false, false, true, c.defaultDatagramsQueueSize, c.compressAlgorithm(), nil)
 	newChannel.setDatagramSender(c.getDatagramSenderForChannel(newChannel.ChannelID()))
 	switch channelType {
 	case "forwarded-tcp":

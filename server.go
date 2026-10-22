@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -191,10 +192,14 @@ func (s *Server) handleChannelStream(qconn *quic.Conn, stream *quic.Stream) {
 		ChannelID:            uint64(stream.StreamID()),
 		ChannelType:          channelType,
 		MaxPacketSize:        maxPacketSize,
+		// the compression of the channel body (PLAN.md 9, B8): the codec
+		// both sides derive from the capability the peer announced in
+		// its version string.  A peer that announced nothing gets the
+		// plain frames.
+		CompressAlgorithm: conversation.compressAlgorithm(),
 	}
 
-	newChannel := NewChannel(channelInfo.ConversationStreamID, channelInfo.ConversationID, uint64(stream.StreamID()), channelInfo.ChannelType, channelInfo.MaxPacketSize,
-		stream, stream, nil, conversation.channelsManager, false, false, true, s.defaultDatagramQueueSize, 0, nil)
+	newChannel := newServerChannel(conversation, channelInfo, stream, stream, s.defaultDatagramQueueSize)
 
 	switch channelInfo.ChannelType {
 	case "direct-udp":
@@ -214,6 +219,16 @@ func (s *Server) handleChannelStream(qconn *quic.Conn, stream *quic.Stream) {
 		newChannel = &TCPForwardingChannelImpl{Channel: newChannel, RemoteAddr: tcpAddr}
 	}
 	conversation.channelsAcceptQueue.Add(newChannel)
+}
+
+// newServerChannel creates the channel of a client-opened channel.  The
+// compressed frames of the channel use the codec both sides negotiated
+// out of the capability the peer announced in its version string (the
+// compression of the channel body, PLAN.md 9 B8): a peer that
+// announced nothing gets the plain frames.
+func newServerChannel(conversation *Conversation, channelInfo *ChannelInfo, recv *quic.Stream, send io.WriteCloser, datagramsQueueSize uint64) Channel {
+	return NewChannel(channelInfo.ConversationStreamID, channelInfo.ConversationID, channelInfo.ChannelID, channelInfo.ChannelType, channelInfo.MaxPacketSize,
+		recv, send, nil, conversation.channelsManager, false, false, true, datagramsQueueSize, channelInfo.CompressAlgorithm, nil)
 }
 
 func (s *Server) getConversationsManager(qconn *quic.Conn) (*conversationsManager, bool) {

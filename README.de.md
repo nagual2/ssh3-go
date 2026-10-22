@@ -88,6 +88,7 @@ Rust ist kein reines Codec-Experiment mehr: funktionierende Client- und Server-B
 | Funktion | Go CLI/Server | Rust | Hinweise |
 | --- | --- | --- | --- |
 | QUIC + HTTP/3 SSH3-Transport | Ja | Ja | Rust nutzt `quinn` plus einen gepatchten vendored `h3`-Crate. |
+| Kompression des Kanalkörpers | Ja | Nein | Der Versionsstring kündigt die vom Endpunkt dekodierbaren Codecs an (deflate, lz4, zstd); ein komprimierter Frame ist der Nachrichtentyp 192. Beide Seiten komprimieren, und ein Peer ohne Ankündigung bekommt die einfachen Frames. |
 | Sitzung: Shell und Exec | Ja | Ja | Durch Unit- und Real-Binary-Interop-Tests abgedeckt. |
 | PTY-Shell, Resize und Signal-Forwarding | Ja | Ja | Real-Binary-Interop für Resize und Signale ist beidseitig getestet. Windows-Clients erhalten ein PTY mit fester 80x24-Fallback-Geometrie. |
 | Public-Key-Authentifizierung | Ja | Ja | Ed25519, P-256 und RSA sind abgedeckt. |
