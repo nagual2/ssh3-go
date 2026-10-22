@@ -237,7 +237,11 @@ var lz4CompressorPool = sync.Pool{
 
 // Compress compresses one frame payload with the given algorithm.  The
 // second return value is false when the algorithm is not available in
-// this build; the caller then sends the plain frame.
+// this build or when the codec refuses the payload; the caller then
+// sends the plain frame.  The compressed bytes may be bigger than the
+// payload (an incompressible one): the cutoff of the ZFS fast levels
+// belongs to the frame layer, which sends a frame that does not shrink
+// as it is.
 func Compress(alg uint64, data []byte) ([]byte, bool) {
 	switch alg {
 	case AlgorithmDeflate:
