@@ -1,6 +1,7 @@
 package ssh3
 
 import (
+	"github.com/francoismichel/ssh3/compress"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -52,6 +53,16 @@ type Conversation struct {
 	channelsAcceptQueue *util.AcceptQueue[Channel]
 
 	multiplexed atomic.Bool // set by a control master's CONNECT (stage 3.5)
+}
+
+// compressAlgorithm returns the codec of the compressed data frames of
+// this conversation: the algorithm both sides derive from the
+// capability the peer announced in its version string (the compression
+// of the channel body, PLAN.md 9 B8).  The server side of the fork
+// keeps the plain frames for now - the decoder of the message layer
+// understands the compressed frames either way.
+func (c *Conversation) compressAlgorithm() uint64 {
+	return compress.Choose(c.peerVersion.GetCompressAlgorithms())
 }
 
 func GenerateConversationID(tls *tls.ConnectionState) (convID ConversationID, err error) {
@@ -340,7 +351,7 @@ func (c *Conversation) handleIncomingChannelStream(stream *quic.Stream) {
 		MaxPacketSize:        maxPacketSize,
 	}
 
-	newChannel := NewChannel(channelInfo.ConversationStreamID, channelInfo.ConversationID, uint64(stream.StreamID()), channelInfo.ChannelType, channelInfo.MaxPacketSize, stream, stream, nil, c.channelsManager, false, false, true, c.defaultDatagramsQueueSize, nil)
+	newChannel := NewChannel(channelInfo.ConversationStreamID, channelInfo.ConversationID, uint64(stream.StreamID()), channelInfo.ChannelType, channelInfo.MaxPacketSize, stream, stream, nil, c.channelsManager, false, false, true, c.defaultDatagramsQueueSize, 0, nil)
 	newChannel.setDatagramSender(c.getDatagramSenderForChannel(newChannel.ChannelID()))
 	switch channelType {
 	case "forwarded-tcp":
@@ -426,7 +437,7 @@ func (c *Conversation) OpenChannel(channelType string, maxPacketSize uint64, dat
 	if err != nil {
 		return nil, err
 	}
-	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), channelType, maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, nil)
+	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), channelType, maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, c.compressAlgorithm(), nil)
 	c.channelsManager.addChannel(channel)
 	return channel, nil
 }
@@ -439,7 +450,7 @@ func (c *Conversation) OpenUDPForwardingChannel(maxPacketSize uint64, datagramsQ
 	}
 	additionalBytes := buildForwardingChannelAdditionalBytes(remoteAddr.IP, uint16(remoteAddr.Port))
 
-	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), "direct-udp", maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, additionalBytes)
+	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), "direct-udp", maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, c.compressAlgorithm(), additionalBytes)
 	channel.setDatagramSender(c.getDatagramSenderForChannel(channel.ChannelID()))
 	channel.maybeSendHeader()
 	c.channelsManager.addChannel(channel)
@@ -454,7 +465,7 @@ func (c *Conversation) OpenTCPForwardingChannel(maxPacketSize uint64, datagramsQ
 	}
 	additionalBytes := buildForwardingChannelAdditionalBytes(remoteAddr.IP, uint16(remoteAddr.Port))
 
-	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), "direct-tcp", maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, additionalBytes)
+	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), "direct-tcp", maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, c.compressAlgorithm(), additionalBytes)
 	channel.maybeSendHeader()
 	c.channelsManager.addChannel(channel)
 	return &TCPForwardingChannelImpl{Channel: channel, RemoteAddr: remoteAddr}, nil
@@ -472,7 +483,7 @@ func (c *Conversation) openForwardedChannel(channelType string, maxPacketSize ui
 	}
 	additionalBytes := buildForwardingChannelAdditionalBytes(targetIP, targetPort)
 
-	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), channelType, maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, additionalBytes)
+	channel := NewChannel(uint64(c.controlStream.StreamID()), c.conversationID, uint64(str.StreamID()), channelType, maxPacketSize, str, str, nil, c.channelsManager, true, true, false, datagramsQueueSize, c.compressAlgorithm(), additionalBytes)
 	channel.maybeSendHeader()
 	c.channelsManager.addChannel(channel)
 	return channel, nil

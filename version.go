@@ -4,6 +4,7 @@
 package ssh3
 
 import (
+	"github.com/francoismichel/ssh3/compress"
 	"fmt"
 	"strconv"
 	"strings"
@@ -204,6 +205,19 @@ type Version struct {
 	protocolName    string // having the protocol name here might sound silly but there are discussions about updating the name right now and we want to support a change
 	protocolVersion ProtocolVersion
 	softwareVersion SoftwareVersion
+
+	// compressAlgorithms is the capability mask the peer announced in
+	// the "compress=" field of its version string (the compression of
+	// the channel body, PLAN.md 9 B8); zero when the peer announced
+	// nothing.
+	compressAlgorithms uint64
+}
+
+// GetCompressAlgorithms returns the capability mask of the peer: the
+// algorithms it announced in the "compress=" field of its version
+// string.  Zero means no compression at all.
+func (v Version) GetCompressAlgorithms() uint64 {
+	return v.compressAlgorithms
 }
 
 func (v Version) GetProtocolVersion() ProtocolVersion {
@@ -222,6 +236,13 @@ func (v Version) GetVersionString() string {
 		v.softwareVersion.ImplementationName, v.softwareVersion.Major, v.softwareVersion.Minor, v.softwareVersion.Patch)
 	if v.protocolVersion.ExperimentalSpecVersion != "" {
 		ret = fmt.Sprintf("%s experimental_spec_version=%s", ret, v.protocolVersion.ExperimentalSpecVersion)
+	}
+	// the compression capability of the channel body (PLAN.md 9, B8):
+	// the algorithms this build can decode, announced in the same
+	// version string - the peer parses it the same way, and the field
+	// is optional (an old peer ignores it)
+	if available := compress.Available(); available != "" {
+		ret = fmt.Sprintf("%s compress=%s", ret, available)
 	}
 	return ret
 }
@@ -271,6 +292,7 @@ func ParseVersionString(versionString string) (version Version, err error) {
 	}
 
 	softwareVersion, err := ParseSoftwareVersion(fields[2], fields[3])
+	var compressAlgorithms uint64
 	if err != nil {
 		log.Error().Msgf("could not parse software version: %s", err)
 		return Version{}, err
@@ -285,13 +307,17 @@ func ParseVersionString(versionString string) (version Version, err error) {
 			subfields := strings.Split(field, "=")
 			if len(subfields) == 2 && subfields[0] == "experimental_spec_version" {
 				protocolVersion.ExperimentalSpecVersion = subfields[1]
+			} else if len(subfields) == 2 && subfields[0] == "compress" {
+				compressAlgorithms = compress.ParseCapability(subfields[1])
 			} else {
 				log.Debug().Msgf("skipping custom version field %s", field)
 			}
 		}
 
 	}
-	return NewVersion(protocolName, protocolVersion, softwareVersion), nil
+	version = NewVersion(protocolName, protocolVersion, softwareVersion)
+	version.compressAlgorithms = compressAlgorithms
+	return version, nil
 }
 
 // GetCurrentSoftwareVersion() returns the current software version to be displayed to the user

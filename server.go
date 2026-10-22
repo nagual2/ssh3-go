@@ -194,7 +194,7 @@ func (s *Server) handleChannelStream(qconn *quic.Conn, stream *quic.Stream) {
 	}
 
 	newChannel := NewChannel(channelInfo.ConversationStreamID, channelInfo.ConversationID, uint64(stream.StreamID()), channelInfo.ChannelType, channelInfo.MaxPacketSize,
-		stream, stream, nil, conversation.channelsManager, false, false, true, s.defaultDatagramQueueSize, nil)
+		stream, stream, nil, conversation.channelsManager, false, false, true, s.defaultDatagramQueueSize, 0, nil)
 
 	switch channelInfo.ChannelType {
 	case "direct-udp":

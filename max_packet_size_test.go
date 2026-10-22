@@ -51,7 +51,7 @@ func TestClampPeerMaxPacketSizeSmallLocal(t *testing.T) {
 // call-site discipline
 func TestNewChannelFloorsLocalMaxPacketSize(t *testing.T) {
 	for _, local := range []uint64{0, 1, 2, 4095} {
-		ch := NewChannel(0, ConversationID{}, 1, "session", local, nil, &nopWriteCloser{}, nil, nil, false, false, false, 1, nil)
+		ch := NewChannel(0, ConversationID{}, 1, "session", local, nil, &nopWriteCloser{}, nil, nil, false, false, false, 1, 0, nil)
 		if got := ch.MaxPacketSize(); got != minPeerMaxPacketSize {
 			t.Errorf("NewChannel with local maxPacketSize %d advertises %d, want the floor %d", local, got, minPeerMaxPacketSize)
 		}

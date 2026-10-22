@@ -1,6 +1,7 @@
 package ssh3
 
 import (
+	"github.com/francoismichel/ssh3/compress"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -68,6 +69,11 @@ type ChannelInfo struct {
 	ConversationID       ConversationID
 	ChannelID            uint64
 	ChannelType          string
+
+	// CompressAlgorithm is the codec of the compressed data frames of
+	// this channel (the compression of the channel body, PLAN.md 9 B8);
+	// zero means the channel carries the plain frames only.
+	CompressAlgorithm uint64
 }
 
 type Channel interface {
@@ -307,7 +313,7 @@ func parseTCPForwardingHeader(channelID uint64, buf util.Reader) (*net.TCPAddr, 
 
 func NewChannel(conversationStreamID uint64, conversationID ConversationID, channelID uint64, channelType string, maxPacketSize uint64, recv *quic.Stream,
 	send io.WriteCloser, datagramSender util.SSH3DatagramSenderFunc, channelCloseListener channelCloseListener, sendHeader bool, confirmSent bool,
-	confirmReceived bool, datagramsQueueSize uint64, additonalHeaderBytes []byte) Channel {
+	confirmReceived bool, datagramsQueueSize uint64, compressAlgorithm uint64, additonalHeaderBytes []byte) Channel {
 	// P4-04: floor the local advertisement before it reaches the header and
 	// the ChannelInfo; see clampLocalMaxPacketSize
 	maxPacketSize = clampLocalMaxPacketSize(maxPacketSize)
@@ -322,6 +328,7 @@ func NewChannel(conversationStreamID uint64, conversationID ConversationID, chan
 			ConversationID:       conversationID,
 			ChannelID:            channelID,
 			ChannelType:          channelType,
+			CompressAlgorithm:    compressAlgorithm,
 		},
 		recv:                 recv,
 		send:                 send,
@@ -413,6 +420,26 @@ func (c *channelImpl) WriteData(dataBuf []byte, dataType ssh3.SSHDataType) (int,
 		msgLen := util.MinUint64(chunkSize, uint64(len(dataBuf)))
 		chunk := dataBuf[:msgLen]
 		dataBuf = dataBuf[msgLen:]
+
+		// the compression of the channel body (PLAN.md 9, B8): the
+		// chunk is compressed when the peer announced the codec and the
+		// compressed form is smaller - the cutoff of the ZFS fast
+		// levels, already compressed data is not compressed twice.  The
+		// stderr stream keeps the plain frames.
+		if c.CompressAlgorithm != compress.AlgorithmNone && dataType == ssh3.SSH_EXTENDED_DATA_NONE {
+			if packed, ok := compress.Compress(c.CompressAlgorithm, chunk); ok && len(packed) < len(chunk) {
+				hdr := ssh3.CompressedDataHeader(c.CompressAlgorithm, uint64(len(packed)))
+				if _, err := c.send.Write(hdr); err != nil {
+					return written, err
+				}
+				n, err := c.send.Write(packed)
+				written += n
+				if err != nil {
+					return written, err
+				}
+				continue
+			}
+		}
 
 		// marshal only the small frame header and write the payload as-is:
 		// copying 30 KiB per message (string conversion + buffer marshal)

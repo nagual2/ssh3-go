@@ -1,6 +1,7 @@
 package message
 
 import (
+	"github.com/francoismichel/ssh3/compress"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +36,12 @@ const SSH_MSG_CHANNEL_CLOSE = 97
 const SSH_MSG_CHANNEL_REQUEST = 98
 const SSH_MSG_CHANNEL_SUCCESS = 99
 const SSH_MSG_CHANNEL_FAILURE = 100
+
+// SSH_MSG_CHANNEL_DATA_COMPRESSED is the compressed body of a channel
+// (the compression of the channel body, PLAN.md 9 B8).  The number
+// sits in the private range of RFC 4253, so it collides with nothing
+// of the SSH2 numbering.
+const SSH_MSG_CHANNEL_DATA_COMPRESSED = 192
 
 type SSHDataType uint64
 
@@ -143,6 +150,40 @@ type DataOrExtendedDataMessage struct {
 
 var _ Message = &DataOrExtendedDataMessage{}
 
+// CompressedDataHeader returns the framing of a compressed data frame:
+// the message type, the algorithm id and the length of the compressed
+// payload.  The concatenation of the header and the payload is
+// byte-for-byte identical to the output of the write of a compressed
+// data message.
+func CompressedDataHeader(algorithm uint64, dataSize uint64) []byte {
+	buf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_DATA_COMPRESSED))
+	buf = util.AppendVarInt(buf, algorithm)
+	return util.AppendVarInt(buf, dataSize)
+}
+
+// ParseCompressedDataMessage decodes a compressed data frame and
+// returns its plain payload: the frame carries the algorithm, so the
+// decoder needs no negotiation of its own.  The output never crosses
+// the bomb limit of the decoder.
+func ParseCompressedDataMessage(buf util.Reader) (*DataOrExtendedDataMessage, error) {
+	algorithm, err := util.ReadVarInt(buf)
+	if err != nil {
+		return nil, err
+	}
+	data, err := util.ParseSSHString(buf)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := compress.Decompress(algorithm, []byte(data))
+	if err != nil {
+		return nil, err
+	}
+	return &DataOrExtendedDataMessage{
+		DataType: SSH_EXTENDED_DATA_NONE,
+		Data:     string(plain),
+	}, nil
+}
+
 func ParseDataMessage(buf util.Reader) (*DataOrExtendedDataMessage, error) {
 	data, err := util.ParseSSHString(buf)
 	if err != nil && err != io.EOF {
@@ -236,6 +277,8 @@ func ParseMessage(r util.Reader) (Message, error) {
 		return ParseChannelOpenConfirmationMessage(r)
 	case SSH_MSG_CHANNEL_OPEN_FAILURE:
 		return ParseChannelOpenFailureMessage(r)
+	case SSH_MSG_CHANNEL_DATA_COMPRESSED:
+		return ParseCompressedDataMessage(r)
 	case SSH_MSG_CHANNEL_DATA, SSH_MSG_CHANNEL_EXTENDED_DATA:
 		if typeId == SSH_MSG_CHANNEL_DATA {
 			return ParseDataMessage(r)
