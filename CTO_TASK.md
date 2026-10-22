@@ -280,6 +280,12 @@ Status 2026-10-17 (implementation session, Go side): rows 1–11 and 13 **done**
 
 DoD verification: `go test ./...` green (WSL, full uncached pass, 13 packages); new tests `cmd/ssh2_parity_test.go` (ssh2 shapes for -L/-J/-o/-p/-mergeBindPort/aliases) and `server_auth/root_gate_test.go`; README en/ru/de rewritten where the old forms were primary; CHANGELOG `Unreleased` entry.
 
+### 7c.1 Linux integration job (the harness against the new CLI) — done 2026-10-22
+
+The `build-linux` job of the `Go` workflow (`.github/workflows/build.yml`, the "Integration tests" step) drives the fork's own binaries, so the CLI-parity wave broke it: the harness still used the retired `-f` transfer form (row 1) — `-f` is the ssh(1) background flag now, so the client backgrounded itself and the transfer never happened. The ginkgo harness was realigned with the canon (`-transfer`, `-i` with the `-privkey` alias covered by its own spec, `-N` for the forwarding probes, explicit timeouts, distinct probe ports) and the v0.1.5-server retro-compatibility probes were dropped (the client wire moved on since v0.1.5).
+
+Two defects of the wave itself surfaced through the harness and are fixed: the `IdentityFile` keyword collision (the privkey plugin and the agent plugin claim it, and the map iteration decided the winner per run — row 2's `-i` worked only half of the time) and the proxy-jump datagram budget under quic-go v0.63 (the tunneled QUIC packets no longer fit into the datagram budget of the outer connection). `go vet ./...` is clean and the `lint` target vets the tree again.
+
 ## 8. Non-goals
 
 - Do not chase X11 forwarding or interactive agent features before Stage 3 is done.
