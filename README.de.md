@@ -68,7 +68,7 @@ Das Release-Paket wird über die systemd-`EnvironmentFile` unter `/etc/ssh3/ssh3
 
 Änderungen anwenden: `sudo systemctl restart ssh3-server`.
 
-Client und Server akzeptieren QUIC-Tuning-Flags für Bulk-Transfers: `-initial-packet-size` (initiale QUIC-Paketgröße in Bytes, Standard `1350`), `-stream-rx-mb` (Flow-Control-Empfangsfenster pro Stream in MiB, Standard `8`) und `-conn-rx-mb` (Empfangsfenster auf Verbindungsebene in MiB, Standard `16`).
+Client und Server akzeptieren QUIC-Tuning-Flags für Bulk-Transfers: `-initial-packet-size` (initiale QUIC-Paketgröße in Bytes, Standard `1200` — das QUIC-Minimum, damit eine gewöhnliche Verbindung auf jedem Pfad ab 1280 Bytes läuft), `-stream-rx-mb` (Flow-Control-Empfangsfenster pro Stream in MiB, Standard `8`) und `-conn-rx-mb` (Empfangsfenster auf Verbindungsebene in MiB, Standard `16`). Eine Proxy-Jump-Kette hebt die Größe ihrer äußersten Verbindung um 48 Byte je Sprung (1248 bei einem Sprung), und der Jump-Host läuft mit derselben Größe, weil sein Datagram-Budget die Pakete der getunnelten Verbindung tragen muss.
 
 ## Interaktive Escape-Sequenzen
 Ein Escape-Zeichen am Zeilenanfang steuert den Client: `~.` trennt die Verbindung, `~^Z` stoppt den Client lokal (unix), `~~` sendet ein literales `~`; eine unbekannte Sequenz wird wörtlich weitergeleitet. Das Zeichen ist standardmäßig `~` und wird mit `-o EscapeChar=<Zeichen|none>` oder demselben Schlüsselwort in `~/.ssh/config` gewählt.

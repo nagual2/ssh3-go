@@ -68,7 +68,7 @@ The release package is configured through the systemd `EnvironmentFile` at `/etc
 
 Apply changes with `sudo systemctl restart ssh3-server`.
 
-Both client and server accept QUIC transport tuning flags for bulk transfers: `-initial-packet-size` (initial QUIC packet size in bytes, default `1350`), `-stream-rx-mb` (per-stream flow-control receive window in MiB, default `8`), and `-conn-rx-mb` (connection-level receive window in MiB, default `16`).
+Both client and server accept QUIC transport tuning flags for bulk transfers: `-initial-packet-size` (initial QUIC packet size in bytes, default `1200` - the QUIC minimum, so a plain connection works on every path from 1280 bytes up), `-stream-rx-mb` (per-stream flow-control receive window in MiB, default `8`), and `-conn-rx-mb` (connection-level receive window in MiB, default `16`). A proxy-jump chain raises the size of its outermost connection by 48 bytes per hop (1248 for one hop), and the jump host runs with the same size, because its datagram budget has to carry the packets of the tunneled connection.
 
 ## Interactive escape sequences
 An escape character at the start of a line controls the client: `~.` disconnects, `~^Z` suspends the client locally (unix), `~~` sends one literal `~`; an unknown sequence forwards literally. The character is `~` by default and is picked with `-o EscapeChar=<char|none>` or the same keyword in `~/.ssh/config`.
