@@ -98,20 +98,39 @@ func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacket
 			return
 		}
 
-		str := w.(http3.HTTPStreamer).HTTPStream()
-		// The conversation context must derive from the QUIC connection's:
-		// when the connection dies without an application-level close (client
-		// crash, network loss), the conversation handler blocked in
-		// AcceptChannel has to wake up and release the conversation's external
-		// resources (reverse-forwarding binds, forwarded agent sockets).
-		conv, err := ssh3.NewServerConversation(qconn.Context(), str, qconn, qconn, defaultMaxPacketSize, peerVersion)
+		// the conversation id derives from the tls exporters alone, the
+		// stream is not needed for it: the verifiers below take the id
+		// while the response is still clean, and the stream takeover
+		// (the implicit-200 flush, the B13 finding) waits for the
+		// positive verdict - a refusal riding after the takeover
+		// reaches the client as a success (the lost 401 of the B11-3)
+		tlsState := qconn.ConnectionState().TLS
+		convID, err := ssh3.GenerateConversationID(&tlsState)
 		if err != nil {
-			log.Error().Msgf("could not create new server conversation")
+			log.Error().Msgf("could not generate conversation ID on server")
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		convID := conv.ConversationID()
 		base64ConvID := base64.StdEncoding.EncodeToString(convID[:])
+
+		// the takeover and the conversation creation run only on the
+		// positive verdict.  The conversation context must derive from
+		// the QUIC connection's: when the connection dies without an
+		// application-level close (client crash, network loss), the
+		// conversation handler blocked in AcceptChannel has to wake up
+		// and release the conversation's external resources
+		// (reverse-forwarding binds, forwarded agent sockets).  A
+		// conversation-create failure after the headers flushed is
+		// internal and leaves the stream to the teardown.
+		serveConversation := func(username string) {
+			str := w.(http3.HTTPStreamer).HTTPStream()
+			conv, err := ssh3.NewServerConversation(qconn.Context(), str, qconn, qconn, defaultMaxPacketSize, peerVersion)
+			if err != nil {
+				log.Error().Msgf("could not create new server conversation")
+				return
+			}
+			handlerFunc(username, conv, w, r)
+		}
 
 		// first, handle the HTTP request verifiers (often plugins)
 		for _, abstractVerifier := range identityVerifiers {
@@ -119,7 +138,7 @@ func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacket
 			case *WrappedPluginVerifier:
 				if verifier.Verify(r, base64ConvID) {
 					log.Debug().Msgf("request for user %s successfully verified by plugin", username)
-					handlerFunc(username, conv, w, r)
+					serveConversation(username)
 					return
 				}
 			}
@@ -130,12 +149,12 @@ func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacket
 		authorization := r.Header.Get("Authorization")
 		if enablePasswordLogin && strings.HasPrefix(authorization, "Basic ") {
 			if CheckBasicAuth(username, w, r) {
-				handlerFunc(username, conv, w, r)
+				serveConversation(username)
 			}
 			return
 		} else if strings.HasPrefix(authorization, "Bearer ") {
 			if VerifyJWT(identityVerifiers, base64ConvID, w, r) {
-				handlerFunc(username, conv, w, r)
+				serveConversation(username)
 			}
 			return
 		}
