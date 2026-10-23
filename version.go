@@ -4,8 +4,8 @@
 package ssh3
 
 import (
-	"github.com/francoismichel/ssh3/compress"
 	"fmt"
+	"github.com/francoismichel/ssh3/compress"
 	"strconv"
 	"strings"
 
