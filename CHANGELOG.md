@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); eac
 
 ## [Unreleased]
 
+## [0.1.38] - 2026-10-23
+
 ### Added
 - **The channel body can be compressed**: the version string carries a `compress=` capability field with the algorithms the endpoint can decode, and a compressed data frame (the message type 192, the algorithm id and the compressed payload) rides the channel. The frame unit is one data message, so a plain frame and a compressed frame may share the channel in any order, and the cutoff of the ZFS fast levels keeps a frame that does not shrink in the plain form - already compressed data is not compressed twice. The wire contract is the one of the C port (ssh3-c), written down in its protocol specification, section 15. The codecs are the deflate of the Go standard library, the lz4 block format and the zstd frame of the reference library, and the bytes are the ones of the C port: the lz4 codec emits the block of `LZ4_compress_default` (not the frame of the stream format), and the zstd codec emits a frame that always carries the size of its payload - the frame the decoder of the C port refuses without it. The preference order is the one of the C port (zstd, deflate, lz4), so both sides pick the same codec out of the announced intersection, and both ends compress now: the server derives the codec from the capability the client announced in its version string, so a client that offers nothing gets the plain frames. The decoder refuses a frame that expands beyond the channel packet limit (16 MiB).
 
