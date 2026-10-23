@@ -73,6 +73,31 @@ func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacket
 		}
 		defer ReleaseUnauthenticatedConversation()
 
+		// the identity resolution runs BEFORE the HTTP stream is taken:
+		// w.(http3.HTTPStreamer).HTTPStream() flushes the response headers
+		// to the wire (the implicit 200), so every refusal that happens
+		// after it reaches the client as a success - the client opens its
+		// channels and hangs until the conversation teardown cancels them
+		// (the B13 finding of the 2026-10-22 cross run). The user lookup
+		// and the identities read answer their own 401s while the
+		// response is still clean.
+		username := r.URL.User.Username()
+		if username == "" {
+			username = r.URL.Query().Get("user")
+		}
+		user, err := unix_util.GetUser(username)
+		if err != nil {
+			log.Warn().Msgf("unknown user %q: refusing before the response headers flush", username)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		identityVerifiers, err := GetAuthorizedIdentities(user)
+		if err != nil {
+			log.Error().Msgf("error in JWT auth handling when retrieving authorized identities: %s", err)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
 		str := w.(http3.HTTPStreamer).HTTPStream()
 		// The conversation context must derive from the QUIC connection's:
 		// when the connection dies without an application-level close (client
@@ -87,22 +112,6 @@ func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacket
 		}
 		convID := conv.ConversationID()
 		base64ConvID := base64.StdEncoding.EncodeToString(convID[:])
-
-		username := r.URL.User.Username()
-		if username == "" {
-			username = r.URL.Query().Get("user")
-		}
-		user, err := unix_util.GetUser(username)
-		if err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		identityVerifiers, err := GetAuthorizedIdentities(user)
-		if err != nil {
-			log.Error().Msgf("error in JWT auth handling when retrieving authorized identities: %s", err)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
 
 		// first, handle the HTTP request verifiers (often plugins)
 		for _, abstractVerifier := range identityVerifiers {
