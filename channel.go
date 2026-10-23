@@ -1,10 +1,10 @@
 package ssh3
 
 import (
-	"github.com/francoismichel/ssh3/compress"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/francoismichel/ssh3/compress"
 	"io"
 	"net"
 

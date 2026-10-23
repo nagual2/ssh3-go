@@ -1,9 +1,9 @@
 package message
 
 import (
-	"github.com/francoismichel/ssh3/compress"
 	"errors"
 	"fmt"
+	"github.com/francoismichel/ssh3/compress"
 	"io"
 
 	"github.com/francoismichel/ssh3/util"

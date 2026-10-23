@@ -1,12 +1,12 @@
 package ssh3
 
 import (
-	"github.com/francoismichel/ssh3/compress"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"github.com/francoismichel/ssh3/compress"
 	"io"
 	"net"
 	"net/http"
