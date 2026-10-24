@@ -150,8 +150,15 @@ func buildHeader(conversationStreamID uint64, channelType string, maxPacketSize 
 func buildForwardingChannelAdditionalBytes(remoteAddr net.IP, port uint16) []byte {
 	var buf []byte
 
+	// The resolver hands out IPv4 as the mapped ::ffff:a.b.c.d form (a
+	// 16-byte net.IP), so the family cannot be picked by slice length:
+	// a mapped address would go out as IPv6 with the v4 bytes inside,
+	// and a peer following the wire contract (the family is the only
+	// length promise) refuses it. To4() names the v4 reality of both
+	// the 4-byte and the mapped form.
 	var addressFamily util.SSHForwardingAddressFamily
-	if len(remoteAddr) == 4 {
+	if v4 := remoteAddr.To4(); v4 != nil {
+		remoteAddr = v4
 		addressFamily = util.SSHAFIpv4
 	} else {
 		addressFamily = util.SSHAFIpv6
