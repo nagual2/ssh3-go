@@ -235,6 +235,27 @@ var lz4CompressorPool = sync.Pool{
 	New: func() any { return new(lz4.Compressor) },
 }
 
+// The deflate writers are pooled with their output buffer: a fresh
+// flate.Writer per frame is the heaviest allocation of the compressed
+// path (ROADMAP.local.md §R9 wave 3). The returned slice is a copy, so
+// the slot comes back to the pool before the caller reads the bytes.
+type deflateSlot struct {
+	buf    bytes.Buffer
+	writer *flate.Writer
+}
+
+var deflatePool = sync.Pool{
+	New: func() any {
+		// deflateLevel is a compile-time constant, the error is not
+		// reachable; the writer gets its real target on Reset
+		writer, err := flate.NewWriter(nil, deflateLevel)
+		if err != nil {
+			panic(err)
+		}
+		return &deflateSlot{writer: writer}
+	},
+}
+
 // Compress compresses one frame payload with the given algorithm.  The
 // second return value is false when the algorithm is not available in
 // this build or when the codec refuses the payload; the caller then
@@ -245,18 +266,20 @@ var lz4CompressorPool = sync.Pool{
 func Compress(alg uint64, data []byte) ([]byte, bool) {
 	switch alg {
 	case AlgorithmDeflate:
-		var buf bytes.Buffer
-		writer, err := flate.NewWriter(&buf, deflateLevel)
-		if err != nil {
+		slot := deflatePool.Get().(*deflateSlot)
+		slot.buf.Reset()
+		slot.writer.Reset(&slot.buf)
+		if _, err := slot.writer.Write(data); err != nil {
+			deflatePool.Put(slot)
 			return nil, false
 		}
-		if _, err := writer.Write(data); err != nil {
+		if err := slot.writer.Close(); err != nil {
+			deflatePool.Put(slot)
 			return nil, false
 		}
-		if err := writer.Close(); err != nil {
-			return nil, false
-		}
-		return buf.Bytes(), true
+		packed := append([]byte(nil), slot.buf.Bytes()...)
+		deflatePool.Put(slot)
+		return packed, true
 	case AlgorithmLZ4:
 		// the LZ4 block format (the bytes of LZ4_compress_default): the
 		// buffer must hold the worst case, the bound of the reference
