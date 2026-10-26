@@ -6,6 +6,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/francoismichel/ssh3/compress"
 	"github.com/francoismichel/ssh3/message"
 	"github.com/francoismichel/ssh3/util"
 )
@@ -135,6 +136,21 @@ func TestDumpWireVectors(t *testing.T) {
 	dump("dynamic_forward_target_reply_error", writeMessage(t, &message.DynamicForwardTargetReply{
 		ErrorUTF8: "dial tcp 192.0.2.10:80: connect: connection refused",
 	}))
+	// The compression of the channel body (PLAN.md 9 B8): the compressed data
+	// frame carries the algorithm id and the compressed payload as an SSH
+	// string. The payload is the deflate codec output of a fixed input, so the
+	// bytes are deterministic and both implementations can reproduce them.
+	dump("channel_data_compressed_deflate", func() []byte {
+		plain := []byte("hello compression payload")
+		packed, ok := compress.Compress(compress.AlgorithmDeflate, plain)
+		if !ok {
+			t.Fatalf("the deflate codec refused the payload")
+		}
+		hdr := message.CompressedDataHeader(compress.AlgorithmDeflate, uint64(len(packed)))
+		out := append([]byte{}, hdr...)
+		out = append(out, packed...)
+		return out
+	}())
 }
 
 func strings140() string {
