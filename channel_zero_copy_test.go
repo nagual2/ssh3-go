@@ -87,3 +87,55 @@ func TestSendMessageNoAllocsLargeMessage(t *testing.T) {
 		t.Fatalf("sendMessage (large message) allocates %.1f objects per call, want 0", allocs)
 	}
 }
+
+// The R9 before/after pair: WriteData is the optimized path,
+// referenceWrite (channel_write_test.go) is the byte-identical replica of
+// the pre-optimization per-message marshalling.
+var benchPayload = func() []byte {
+	b := make([]byte, 1<<20)
+	for i := range b {
+		b[i] = byte(i*7 + i>>9)
+	}
+	return b
+}()
+
+func BenchmarkWriteData(b *testing.B) {
+	ch := &channelImpl{
+		ChannelInfo: ChannelInfo{MaxPacketSize: 30000},
+		send:        discardWriter{},
+	}
+	b.SetBytes(int64(len(benchPayload)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := ch.WriteData(benchPayload, ssh3.SSH_EXTENDED_DATA_NONE); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkReferenceWrite(b *testing.B) {
+	b.SetBytes(int64(len(benchPayload)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = referenceWrite(ssh3.SSH_EXTENDED_DATA_NONE, benchPayload, 30000)
+	}
+}
+
+func BenchmarkSendMessage(b *testing.B) {
+	msg := &ssh3.ChannelOpenConfirmationMessage{MaxPacketSize: 30000}
+	ch := &channelImpl{
+		ChannelInfo: ChannelInfo{MaxPacketSize: 30000},
+		send:        discardWriter{},
+	}
+	if err := ch.sendMessage(msg); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := ch.sendMessage(msg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
