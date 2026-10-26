@@ -70,10 +70,11 @@ func TestDumpWireVectors(t *testing.T) {
 		DataType: message.SSH_EXTENDED_DATA_STDERR,
 		Data:     "err",
 	}))
-	// Zero-copy header: MarshalHeader(len) + payload must equal channel_data.
+	// Zero-copy header: AppendHeader(5) + payload must equal channel_data.
+	var hdr [16]byte
 	dump("channel_data_header_5", (&message.DataOrExtendedDataMessage{
 		DataType: message.SSH_EXTENDED_DATA_NONE,
-	}).MarshalHeader(5))
+	}).AppendHeader(hdr[:0], 5))
 	dump("channel_request_exec", writeMessage(t, &message.ChannelRequestMessage{
 		WantReply:      false,
 		ChannelRequest: &message.ExecRequest{Command: "uptime"},

@@ -40,7 +40,8 @@ func (m *ChannelRequestMessage) Write(buf []byte) (consumed int, err error) {
 		return 0, fmt.Errorf("buffer too small to write message for channel request of type %T: %d < %d", m.ChannelRequest, len(buf), m.Length())
 	}
 
-	msgTypeBuf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_REQUEST))
+	var tbuf [8]byte
+	msgTypeBuf := util.AppendVarInt(tbuf[:0], uint64(SSH_MSG_CHANNEL_REQUEST))
 	consumed += copy(buf[consumed:], msgTypeBuf)
 
 	n, err := util.WriteSSHString(buf[consumed:], m.ChannelRequest.RequestTypeStr())
@@ -253,7 +254,8 @@ func (r *X11Request) Write(buf []byte) (consumed int, err error) {
 	}
 	consumed += n
 
-	screenNumberBuf := util.AppendVarInt(nil, r.X11ScreenNumber)
+	var tbuf [8]byte
+	screenNumberBuf := util.AppendVarInt(tbuf[:0], r.X11ScreenNumber)
 	n = copy(buf[consumed:], screenNumberBuf)
 	consumed += n
 
@@ -451,7 +453,8 @@ func (r *ExitStatusRequest) Write(buf []byte) (int, error) {
 	if len(buf) < r.Length() {
 		return 0, errors.New("buffer too small to write PTY request")
 	}
-	attrBuf := util.AppendVarInt(nil, r.ExitStatus)
+	var tbuf [8]byte
+	attrBuf := util.AppendVarInt(tbuf[:0], r.ExitStatus)
 	n := copy(buf, attrBuf)
 	return n, nil
 }

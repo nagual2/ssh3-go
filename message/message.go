@@ -72,7 +72,8 @@ func ParseChannelOpenConfirmationMessage(buf util.Reader) (*ChannelOpenConfirmat
 }
 
 func (m *ChannelOpenConfirmationMessage) Write(buf []byte) (consumed int, err error) {
-	varintBuf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_OPEN_CONFIRMATION))
+	var tbuf [16]byte
+	varintBuf := util.AppendVarInt(tbuf[:0], uint64(SSH_MSG_CHANNEL_OPEN_CONFIRMATION))
 	varintBuf = util.AppendVarInt(varintBuf, m.MaxPacketSize)
 	consumed = copy(buf, varintBuf)
 	return consumed, nil
@@ -124,7 +125,8 @@ func (m *ChannelOpenFailureMessage) Write(buf []byte) (consumed int, err error) 
 		return 0, errors.New("buffer too small to write channel open failure message")
 	}
 
-	varintBuf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_OPEN_FAILURE))
+	var tbuf [16]byte
+	varintBuf := util.AppendVarInt(tbuf[:0], uint64(SSH_MSG_CHANNEL_OPEN_FAILURE))
 	varintBuf = util.AppendVarInt(varintBuf, uint64(m.ReasonCode))
 	consumed += copy(buf[consumed:], varintBuf)
 
@@ -154,11 +156,13 @@ var _ Message = &DataOrExtendedDataMessage{}
 // the message type, the algorithm id and the length of the compressed
 // payload.  The concatenation of the header and the payload is
 // byte-for-byte identical to the output of the write of a compressed
-// data message.
+// data message.  The returned slice aliases a stack array of this call:
+// write it out before returning (R9).
 func CompressedDataHeader(algorithm uint64, dataSize uint64) []byte {
-	buf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_DATA_COMPRESSED))
-	buf = util.AppendVarInt(buf, algorithm)
-	return util.AppendVarInt(buf, dataSize)
+	var buf [16]byte
+	b := util.AppendVarInt(buf[:0], uint64(SSH_MSG_CHANNEL_DATA_COMPRESSED))
+	b = util.AppendVarInt(b, algorithm)
+	return util.AppendVarInt(b, dataSize)
 }
 
 // ParseCompressedDataMessage decodes a compressed data frame and
@@ -196,13 +200,14 @@ func ParseDataMessage(buf util.Reader) (*DataOrExtendedDataMessage, error) {
 }
 
 func (m *DataOrExtendedDataMessage) Write(buf []byte) (consumed int, err error) {
+	var tbuf [8]byte
 	if m.DataType == SSH_EXTENDED_DATA_NONE {
-		msgTypeBuf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_DATA))
+		msgTypeBuf := util.AppendVarInt(tbuf[:0], uint64(SSH_MSG_CHANNEL_DATA))
 		consumed += copy(buf[consumed:], msgTypeBuf)
 	} else {
-		msgTypeBuf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_EXTENDED_DATA))
+		msgTypeBuf := util.AppendVarInt(tbuf[:0], uint64(SSH_MSG_CHANNEL_EXTENDED_DATA))
 		consumed += copy(buf[consumed:], msgTypeBuf)
-		dataTypeBuf := util.AppendVarInt(nil, uint64(m.DataType))
+		dataTypeBuf := util.AppendVarInt(tbuf[:0], uint64(m.DataType))
 		consumed += copy(buf[consumed:], dataTypeBuf)
 	}
 	n, err := util.WriteSSHString(buf[consumed:], m.Data)
@@ -222,18 +227,20 @@ func (m *DataOrExtendedDataMessage) Length() int {
 	return int(messageTypeLen) + int(util.VarIntLen(uint64(m.DataType))) + int(util.SSHStringLen(m.Data))
 }
 
-// MarshalHeader returns the message framing for a DataOrExtendedData message
-// whose dataSize-byte payload is written separately. The concatenation of the
-// returned header and the payload is byte-for-byte identical to the output of
-// Write for the same message, letting the sender avoid copying the payload.
-func (m *DataOrExtendedDataMessage) MarshalHeader(dataSize uint64) []byte {
+// AppendHeader appends to dst the message framing for a DataOrExtendedData
+// message whose dataSize-byte payload is written separately. The
+// concatenation of the appended header and the payload is byte-for-byte
+// identical to the output of Write for the same message, letting the sender
+// avoid copying the payload. The append form keeps the caller's buffer
+// allocation-free (R9).
+func (m *DataOrExtendedDataMessage) AppendHeader(dst []byte, dataSize uint64) []byte {
 	if m.DataType != SSH_EXTENDED_DATA_NONE {
-		buf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_EXTENDED_DATA))
-		buf = util.AppendVarInt(buf, uint64(m.DataType))
-		return util.AppendVarInt(buf, dataSize)
+		dst = util.AppendVarInt(dst, uint64(SSH_MSG_CHANNEL_EXTENDED_DATA))
+		dst = util.AppendVarInt(dst, uint64(m.DataType))
+		return util.AppendVarInt(dst, dataSize)
 	}
-	buf := util.AppendVarInt(nil, uint64(SSH_MSG_CHANNEL_DATA))
-	return util.AppendVarInt(buf, dataSize)
+	dst = util.AppendVarInt(dst, uint64(SSH_MSG_CHANNEL_DATA))
+	return util.AppendVarInt(dst, dataSize)
 }
 
 func ParseExtendedDataMessage(buf util.Reader) (*DataOrExtendedDataMessage, error) {

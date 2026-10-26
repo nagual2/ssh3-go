@@ -234,8 +234,8 @@ func WriteSSHString(out []byte, s string) (int, error) {
 	if uint64(len(out)) < uint64(SSHStringLen(s)) {
 		return 0, fmt.Errorf("buffer too small to write varint: %d < %d", len(out), SSHStringLen(s))
 	}
-	buf := AppendVarInt(nil, uint64(len(s)))
-
+	var tbuf [8]byte
+	buf := AppendVarInt(tbuf[:0], uint64(len(s)))
 	copied := copy(out, buf)
 	copied += copy(out[copied:], s)
 	return copied, nil

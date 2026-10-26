@@ -54,9 +54,10 @@ func writeDynamicForwardHeader(buf []byte, kind uint64) (consumed int, err error
 	if len(buf) < dynamicForwardHeaderLen() {
 		return 0, errors.New("buffer too small to write dynamic forwarding header")
 	}
-	header := util.AppendVarInt(nil, uint64(DynamicForwardVersion))
+	var tbuf [8]byte
+	header := util.AppendVarInt(tbuf[:0], uint64(DynamicForwardVersion))
 	consumed += copy(buf[consumed:], header)
-	kindBuf := util.AppendVarInt(nil, kind)
+	kindBuf := util.AppendVarInt(tbuf[:0], kind)
 	consumed += copy(buf[consumed:], kindBuf)
 	return consumed, nil
 }

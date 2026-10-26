@@ -80,7 +80,8 @@ func (m *RequestReverseForward) Write(buf []byte) (consumed int, err error) {
 		return 0, errors.New("buffer too small to write reverse forwarding request")
 	}
 
-	varintBuf := util.AppendVarInt(nil, uint64(m.Protocol))
+	var tbuf [8]byte
+	varintBuf := util.AppendVarInt(tbuf[:0], uint64(m.Protocol))
 	consumed += copy(buf[consumed:], varintBuf)
 
 	n, err := util.WriteSSHString(buf[consumed:], m.BindAddress)

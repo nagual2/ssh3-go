@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/francoismichel/ssh3/compress"
 	"io"
 	"net"
+	"sync"
+
+	"github.com/francoismichel/ssh3/compress"
 
 	ssh3 "github.com/francoismichel/ssh3/message"
 	"github.com/francoismichel/ssh3/util"
@@ -452,8 +454,9 @@ func (c *channelImpl) WriteData(dataBuf []byte, dataType ssh3.SSHDataType) (int,
 		// copying 30 KiB per message (string conversion + buffer marshal)
 		// showed up as memmove/GC pressure in the data-path profile
 		// (docs/PROFILE-2026-09-29.md); the byte stream is identical
-		hdr := dataMsg.MarshalHeader(uint64(msgLen))
-		if _, err := c.send.Write(hdr); err != nil {
+		var hdr [16]byte
+		h := dataMsg.AppendHeader(hdr[:0], uint64(msgLen))
+		if _, err := c.send.Write(h); err != nil {
 			return written, err
 		}
 		n, err := c.send.Write(chunk)
@@ -473,18 +476,37 @@ func (c *channelImpl) confirmChannel(maxPacketSize uint64) error {
 	return err
 }
 
+// sendMessageBufs recycles the marshalling buffer of every control message:
+// the per-message make showed up as allocation pressure on the control path
+// (ROADMAP.local.md §R9). Buffers grow on demand and come back here right
+// after send.Write — the QUIC stream copies the bytes into its own packet
+// buffers, so the write never aliases the caller's slice.
+var sendMessageBufs = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 512)
+		return &b
+	},
+}
+
 func (c *channelImpl) sendMessage(m ssh3.Message) error {
 	err := c.maybeSendHeader()
 	if err != nil {
 		return err
 	}
-	buf := make([]byte, m.Length())
-	_, err = m.Write(buf)
-	if err != nil {
-		return err
+	size := m.Length()
+	bp := sendMessageBufs.Get().(*[]byte)
+	buf := *bp
+	if cap(buf) < size {
+		buf = make([]byte, size)
 	}
-	c.send.Write(buf)
-	return nil
+	buf = buf[:size]
+	_, err = m.Write(buf)
+	if err == nil {
+		c.send.Write(buf)
+	}
+	*bp = buf[:0]
+	sendMessageBufs.Put(bp)
+	return err
 }
 
 // blocks until the datagram is added
