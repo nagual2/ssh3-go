@@ -29,7 +29,7 @@ const PROTOCOL_EXPERIMENTAL_SPEC_VERSION string = "alpha-00"
 const SOFTWARE_IMPLEMENTATION_NAME string = "francoismichel/ssh3"
 const SOFTWARE_MAJOR int = 0
 const SOFTWARE_MINOR int = 1
-const SOFTWARE_PATCH int = 38
+const SOFTWARE_PATCH int = 39
 
 const SOFTWARE_RC int = 0
 
