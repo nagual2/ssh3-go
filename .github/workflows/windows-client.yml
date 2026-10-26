@@ -58,9 +58,11 @@ jobs:
           go-version-file: go.mod
       - name: Regenerate .syso and compare with the committed blob
         run: |
-          # pinned: @latest moved to v0.3.3 and changed the emitted COFF
-          # symbol table (54480 -> 57288), breaking the byte-identity of the
-          # committed blob on its own (the 0.1.38 lesson twice)
+          # pinned twice: the go-winres COFF output depends on the Go version
+          # the tool itself is built with (go1.26.0 from go.mod emits 54480
+          # bytes, go1.27.x emits 57288 with the same v0.3.3 inputs), so both
+          # the tool version and the toolchain must stay fixed for the
+          # byte-identity of the committed blob (the 0.1.38 lesson, twice)
           go install github.com/tc-hib/go-winres@v0.3.3
           VER="$(grep -oP 'SOFTWARE_PATCH int = \K[0-9]+' version.go)"
           go-winres make --in cmd/ssh3/winres.json --out /tmp/rsrc --arch amd64 --product-version "0.1.${VER}" --file-version "0.1.${VER}"
