@@ -152,17 +152,23 @@ type DataOrExtendedDataMessage struct {
 
 var _ Message = &DataOrExtendedDataMessage{}
 
-// CompressedDataHeader returns the framing of a compressed data frame:
-// the message type, the algorithm id and the length of the compressed
-// payload.  The concatenation of the header and the payload is
-// byte-for-byte identical to the output of the write of a compressed
-// data message.  The returned slice aliases a stack array of this call:
-// write it out before returning (R9).
+// AppendCompressedDataHeader appends to dst the framing of a compressed
+// data frame: the message type, the algorithm id and the length of the
+// compressed payload.  The concatenation of the appended header and the
+// payload is byte-for-byte identical to the output of the write of a
+// compressed data message.  The append form keeps the caller's buffer
+// allocation-free (R9); the write path rides it.
+func AppendCompressedDataHeader(dst []byte, algorithm uint64, dataSize uint64) []byte {
+	dst = util.AppendVarInt(dst, uint64(SSH_MSG_CHANNEL_DATA_COMPRESSED))
+	dst = util.AppendVarInt(dst, algorithm)
+	return util.AppendVarInt(dst, dataSize)
+}
+
+// CompressedDataHeader returns the framing of a compressed data frame for
+// tests and wire dumps; the write path uses the append form.
 func CompressedDataHeader(algorithm uint64, dataSize uint64) []byte {
 	var buf [16]byte
-	b := util.AppendVarInt(buf[:0], uint64(SSH_MSG_CHANNEL_DATA_COMPRESSED))
-	b = util.AppendVarInt(b, algorithm)
-	return util.AppendVarInt(b, dataSize)
+	return AppendCompressedDataHeader(buf[:0], algorithm, dataSize)
 }
 
 // ParseCompressedDataMessage decodes a compressed data frame and

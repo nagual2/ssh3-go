@@ -404,6 +404,17 @@ func (c *channelImpl) maybeSendHeader() error {
 	return nil
 }
 
+// headerBufs recycles the per-chunk frame header buffer of WriteData: a
+// stack array would escape through the interface call of send.Write (one
+// heap allocation per chunk), a pooled heap buffer escapes for free
+// (ROADMAP.local.md §R9).
+var headerBufs = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 16)
+		return &b
+	},
+}
+
 func (c *channelImpl) WriteData(dataBuf []byte, dataType ssh3.SSHDataType) (int, error) {
 	err := c.maybeSendHeader()
 	if err != nil {
@@ -421,11 +432,13 @@ func (c *channelImpl) WriteData(dataBuf []byte, dataType ssh3.SSHDataType) (int,
 			c.ChannelID(), c.ChannelInfo.MaxPacketSize, emptyMsgLen)
 	}
 	chunkSize := c.ChannelInfo.MaxPacketSize - emptyMsgLen
+	dataMsg := &ssh3.DataOrExtendedDataMessage{DataType: dataType}
+	hp := headerBufs.Get().(*[]byte)
+	defer func() {
+		*hp = (*hp)[:0]
+		headerBufs.Put(hp)
+	}()
 	for len(dataBuf) > 0 {
-		dataMsg := &ssh3.DataOrExtendedDataMessage{
-			DataType: dataType,
-			Data:     "",
-		}
 		msgLen := util.MinUint64(chunkSize, uint64(len(dataBuf)))
 		chunk := dataBuf[:msgLen]
 		dataBuf = dataBuf[msgLen:]
@@ -437,8 +450,8 @@ func (c *channelImpl) WriteData(dataBuf []byte, dataType ssh3.SSHDataType) (int,
 		// stderr stream keeps the plain frames.
 		if c.CompressAlgorithm != compress.AlgorithmNone && dataType == ssh3.SSH_EXTENDED_DATA_NONE {
 			if packed, ok := compress.Compress(c.CompressAlgorithm, chunk); ok && len(packed) < len(chunk) {
-				hdr := ssh3.CompressedDataHeader(c.CompressAlgorithm, uint64(len(packed)))
-				if _, err := c.send.Write(hdr); err != nil {
+				h := ssh3.AppendCompressedDataHeader((*hp)[:0], c.CompressAlgorithm, uint64(len(packed)))
+				if _, err := c.send.Write(h); err != nil {
 					return written, err
 				}
 				n, err := c.send.Write(packed)
@@ -454,8 +467,7 @@ func (c *channelImpl) WriteData(dataBuf []byte, dataType ssh3.SSHDataType) (int,
 		// copying 30 KiB per message (string conversion + buffer marshal)
 		// showed up as memmove/GC pressure in the data-path profile
 		// (docs/PROFILE-2026-09-29.md); the byte stream is identical
-		var hdr [16]byte
-		h := dataMsg.AppendHeader(hdr[:0], uint64(msgLen))
+		h := dataMsg.AppendHeader((*hp)[:0], uint64(msgLen))
 		if _, err := c.send.Write(h); err != nil {
 			return written, err
 		}

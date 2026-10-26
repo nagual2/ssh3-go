@@ -88,6 +88,34 @@ func TestSendMessageNoAllocsLargeMessage(t *testing.T) {
 	}
 }
 
+// the chunked write of a big payload must not allocate per chunk: the
+// frame header rides a pooled buffer, the payload is written as-is
+func TestWriteDataNoAllocs(t *testing.T) {
+	payload := make([]byte, 70000)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	ch := &channelImpl{
+		ChannelInfo: ChannelInfo{MaxPacketSize: 30000},
+		send:        discardWriter{},
+	}
+	if _, err := ch.WriteData(payload, ssh3.SSH_EXTENDED_DATA_NONE); err != nil {
+		t.Fatalf("warmup WriteData: %v", err)
+	}
+	bad := false
+	allocs := testing.AllocsPerRun(50, func() {
+		if _, err := ch.WriteData(payload, ssh3.SSH_EXTENDED_DATA_NONE); err != nil {
+			bad = true
+		}
+	})
+	if bad {
+		t.Fatalf("WriteData failed during the measured runs")
+	}
+	if allocs > 0 {
+		t.Fatalf("WriteData allocates %.1f objects per call, want 0", allocs)
+	}
+}
+
 // The R9 before/after pair: WriteData is the optimized path,
 // referenceWrite (channel_write_test.go) is the byte-identical replica of
 // the pre-optimization per-message marshalling.
