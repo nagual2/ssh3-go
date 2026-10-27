@@ -717,6 +717,14 @@ func runExec(user *unix_util.User, channel ssh3.Channel, command, agentSocketPat
 	stdoutDone := readResult(stdout, ssh3Messages.SSH_EXTENDED_DATA_NONE)
 	stderrDone := readResult(stderr, ssh3Messages.SSH_EXTENDED_DATA_STDERR)
 
+	// All pipe readers have drained: only now is Wait safe. os/exec closes
+	// the pipe readers when Wait returns, so calling it earlier races the
+	// output pumps: the losing pump reads "file already closed" instead of
+	// EOF, and the exec then skips the exit status (the client hangs). The
+	// product server carries the same posture ("only now is Wait safe").
+	stdoutErr := <-stdoutDone
+	stderrErr := <-stderrDone
+
 	exitStatus := 1
 	waitErr := cmd.Wait()
 	if waitErr == nil {
@@ -731,11 +739,11 @@ func runExec(user *unix_util.User, channel ssh3.Channel, command, agentSocketPat
 		return waitErr
 	}
 
-	if err := <-stdoutDone; err != nil {
-		return err
+	if stdoutErr != nil {
+		return stdoutErr
 	}
-	if err := <-stderrDone; err != nil {
-		return err
+	if stderrErr != nil {
+		return stderrErr
 	}
 
 	return channel.SendRequest(&ssh3Messages.ChannelRequestMessage{
