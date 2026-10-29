@@ -93,9 +93,33 @@ builds:
     ldflags:
       - -s -w
 
+  # the amd64 key-only static server: the apk entry only (the musl
+  # distros cannot run the glibc CGO server, and a second
+  # /usr/bin/ssh3-server would collide inside the deb/rpm entries)
+  - id: serverkeyonlymusl
+    main: ./cmd/ssh3-server/main.go
+    binary: ssh3-server
+    env:
+      - CGO_ENABLED=0
+      - GOFLAGS=-mod=mod
+    flags:
+      - -mod=mod
+      - -trimpath
+    goos:
+      - linux
+    goarch:
+      - amd64
+    tags:
+      - osusergo
+      - netgo
+      - static_build
+      - disable_password_auth
+    ldflags:
+      - -s -w
+
 archives:
   - id: client
-    builds:
+    ids:
       - client
     formats:
       - tar.gz
@@ -106,7 +130,7 @@ archives:
         formats:
           - zip
   - id: server
-    builds:
+    ids:
       - server
       - serverkeyonly
     formats:
@@ -118,6 +142,9 @@ checksum:
   name_template: checksums.txt
 
 nfpms:
+  # the glibc distros: the full set (the CGO amd64 server carries the
+  # password backend, the deb's libcrypt1 / the rpm's libxcrypt ride
+  # it)
   - id: ssh3-go
     package_name: ssh3-go
     ids:
@@ -136,10 +163,54 @@ nfpms:
     license: Apache-2.0
     formats:
       - deb
+      - rpm
     dependencies:
       - openssl
       - systemd
       - libcrypt1
+    overrides:
+      rpm:
+        dependencies:
+          - openssl
+          - systemd
+          - libxcrypt
+    replaces:
+      - ssh3
+    conflicts:
+      - ssh3
+    bindir: /usr/bin
+    contents:
+      - src: packaging/ssh3-server.service
+        dst: /usr/lib/systemd/system/ssh3-server.service
+      - src: packaging/ssh3-server.env
+        dst: /etc/ssh3/ssh3-server.env
+        type: config
+    scripts:
+      postinstall: packaging/postinst
+      preremove: packaging/prerm
+
+  # the musl distros (alpine): the static builds only - the CGO server
+  # links glibc and would not run on musl, the key-only server rides
+  # instead; musl keeps crypt() in libc, no libcrypt package exists
+  - id: ssh3-go-apk
+    package_name: ssh3-go
+    ids:
+      - client
+      - serverkeyonly
+      - serverkeyonlymusl
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: nagual2
+    homepage: https://github.com/nagual2/ssh3-go
+    maintainer: Max <max@localhost>
+    description: |-
+      SSH3 - Secure Shell over QUIC/HTTP-3 (server and client).
+      The alpine server is key-only (the password backend rides the
+      glibc deb/rpm builds); no OIDC configured.
+    license: Apache-2.0
+    formats:
+      - apk
+    dependencies:
+      - openssl
     replaces:
       - ssh3
     conflicts:
