@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); eac
 
 ## [Unreleased]
 
+### Added
+- **The positional `--sftp` transfer form (the scp canon)**: the direction derives from the leading colon of the remote operand (`:path` — the session host implied), exactly one remote operand is required and any ambiguity refuses cleanly; the connection URL rides the last operand. The explicit `put|get:local:remote` shapes stay the aliases (both heads carry `local:remote`; a colon right behind the drive letter rides the path), and `-r` rides both forms. Mirrors the ssh3-c client; the older `-transfer SRC DST` shape keeps working as the deprecated fork alias. `--sftp` does not combine with `-transfer`, `-N`, `-s` or `-R`.
+
 ## [0.1.38] - 2026-10-23
 
 ### Added

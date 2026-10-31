@@ -207,7 +207,7 @@ ssh3 max@my-server.example.org/ssh3-term -i ~/.ssh/id_ed25519
 
 ### File transfer
 
-Stage 2 adds an `ssh3 -transfer` mode over a dedicated SFTP channel (created
+Stage 2 adds an `ssh3 --sftp` mode over a dedicated SFTP channel (created
 files belong to the session user). Path isolation follows the sshd model by
 default (`-sftp-jail chroot`): the server re-execs a short-lived per-session
 child that chroots into the user's home and drops to the user's uid/gid
@@ -215,30 +215,45 @@ before touching any path — confinement is the kernel's, and the
 network-facing process never opens user files. `-sftp-jail lexical` keeps
 the historical in-process jail (a lexical prefix check; the server process's
 own privileges apply — only sensible for an unprivileged single-user
-server):
+server).
+
+The direction follows the scp canon: the remote operand rides a leading
+colon (the session host implied), exactly one remote operand is required,
+and the connection URL goes last:
 
 ```bash
-# upload a file (remote operand last)
-ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
+# upload a file
+ssh3 --sftp ~/report.pdf :docs/report.pdf max@my-server.example.org/ssh3-term
 
 # upload into an existing remote directory, recursively
-ssh3 -transfer -r ~/project-dir max@my-server.example.org/ssh3-term:backups/
+ssh3 --sftp -r ~/project-dir :backups/ max@my-server.example.org/ssh3-term
 
-# download (remote operand first)
-ssh3 -transfer max@my-server.example.org/ssh3-term:logs/app.log ./app.log
+# download
+ssh3 --sftp :logs/app.log ./app.log max@my-server.example.org/ssh3-term
 
 # resume interrupted transfers instead of overwriting
-ssh3 -transfer --continue big-disk-image.raw max@my-server.example.org/ssh3-term:images/raw
+ssh3 --sftp --continue big-disk-image.raw :images/raw max@my-server.example.org/ssh3-term
 
 # force SHA-256 verification by re-reading the remote file
 # (automatic for transfers over 32 MiB)
-ssh3 -transfer --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
+ssh3 --sftp --checksum data.bin :data.bin max@my-server.example.org/ssh3-term
+
+# the explicit put|get: aliases (both heads carry local:remote)
+ssh3 --sftp put:~/report.pdf:docs/report.pdf max@my-server.example.org/ssh3-term
+ssh3 --sftp get:./app.log:logs/app.log max@my-server.example.org/ssh3-term
+```
+
+The older `-transfer SRC DST` shape — one `user@host:port/url_path:remote_path`
+operand and one local one — stays as a deprecated alias and keeps working:
+
+```bash
+ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
 ```
 
 Notes: the port defaults to 443 and the URL path to `/ssh3-term`; override
-them with `-p` (the ssh2 form) or `-U`, or spell the operand as
-`user@host:port/url_path:remote_path` (the fork's `-P` still works as a
-deprecated alias of `-p` in transfer mode). Non-regular files (symlinks,
+them with `-p` (the ssh2 form) or `-U`, or spell the connection operand as
+`user@host:port/url_path` (the fork's `-P` still works as a deprecated alias
+of `-p` in transfer mode). Non-regular files (symlinks,
 device nodes) are skipped during recursive transfers, and an empty directory
 is created on the other side. The old `-f` transfer form is retired — the
 flag means the ssh2 backgrounding now (the parity table above).

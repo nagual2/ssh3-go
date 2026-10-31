@@ -712,6 +712,7 @@ func ClientMain() int {
 	var reverseForwardsFlag reverseForwardFlags
 	flag.Var(&reverseForwardsFlag, "R", "reverse forwarding: [bind_address:]bind_port[/udp]:target_host:target_port, the server binds the port and forwards to the local target (can be repeated; the ssh2 -R shape without the /udp marker)")
 	transferMode := flag.Bool("transfer", false, "file transfer mode: ssh3 -transfer SRC DST, with exactly one operand in the user@host:remote_path form (uploads towards it) and the other one local (downloads from it)")
+	sftpMode := flag.Bool("sftp", false, "file transfer mode (scp canon): ssh3 --sftp local :remote_path URL | --sftp :remote_path local URL, or the explicit put|get:local:remote spec followed by the connection URL")
 	backgroundFlag := flag.Bool("f", false, "go to background after startup (ssh2 -f): the session detaches from the terminal and keeps running; non-interactive authentication only (key/agent), and the host must be pinned under the ask policy")
 	transferPort := flag.Int("P", 443, "file transfer mode: server port for the user@host:remote_path operand (deprecated alias of -p)")
 	transferURLPath := flag.String("U", "/ssh3-term", "file transfer mode: server URL path for the user@host:remote_path operand")
@@ -1010,6 +1011,10 @@ func ClientMain() int {
 		fmt.Fprintln(os.Stderr, "-R cannot be combined with -transfer")
 		return -1
 	}
+	if len(reverseForwardsFlag) > 0 && *sftpMode {
+		fmt.Fprintln(os.Stderr, "-R cannot be combined with -sftp")
+		return -1
+	}
 	if controlMasterResolved != "no" && proxyJumpResolved != "" {
 		log.Error().Msgf("-M/-control-master is not compatible with -J/-proxy-jump")
 		return -1
@@ -1131,11 +1136,20 @@ func ClientMain() int {
 		return -1
 	}
 
+	if *noSession && *sftpMode {
+		fmt.Fprintln(os.Stderr, "-N cannot be combined with -sftp")
+		return -1
+	}
+
 	if subsystemName != "" {
 		// a subsystem owns the session channel: it cannot be combined with the
 		// modes that also want it, nor with a remote command to run instead
 		if *transferMode {
 			fmt.Fprintln(os.Stderr, "-s cannot be combined with -transfer")
+			return -1
+		}
+		if *sftpMode {
+			fmt.Fprintln(os.Stderr, "-s cannot be combined with -sftp")
 			return -1
 		}
 		if *noSession {
@@ -1158,7 +1172,36 @@ func ClientMain() int {
 		transferDefaultPort = int(portOverride)
 	}
 
-	if *transferMode {
+	if *sftpMode && *transferMode {
+		fmt.Fprintln(os.Stderr, "-sftp cannot be combined with -transfer")
+		return -1
+	}
+
+	// the --sftp canon (the scp shape mirrored from the ssh3-c client): the
+	// remote operand rides the leading colon (the session host implied), the
+	// direction derives from which side carries it; the put|get: shapes stay
+	// the explicit aliases; the connection URL rides the last operand
+	if *sftpMode {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "--sftp wants the transfer spec (one put|get:local:remote alias operand or two positional operands) followed by the connection URL")
+			return -1
+		}
+		urlOperand := args[len(args)-1]
+		local, remote, upload, err := resolveSftpOperands(args[:len(args)-1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", err)
+			return -1
+		}
+		target, err := parseSftpURL(urlOperand, transferDefaultPort, *transferURLPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", err)
+			return -1
+		}
+		target.remotePath = remote
+		fileTransferTarget, fileTransferLocal, fileTransferUpload = target, local, upload
+		urlFromParam = buildTransferURL(fileTransferTarget).String()
+		command = nil
+	} else if *transferMode {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "file transfer mode expects exactly two operands: one user@host:remote_path and one local path")
 			return -1
@@ -1717,7 +1760,7 @@ func ClientMain() int {
 		}
 	}
 
-	if *transferMode {
+	if *transferMode || *sftpMode {
 		return runFileTransfer(c, fileTransferTarget, fileTransferLocal, fileTransferUpload, *recursive, *resumeMode, *verifyChecksum)
 	}
 

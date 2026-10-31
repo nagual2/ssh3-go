@@ -115,6 +115,110 @@ func atoi(value string, fallback int) int {
 	return number
 }
 
+// The --sftp canon (the scp shape mirrored from the ssh3-c client): the
+// remote operand rides the leading colon (the session host implied), the
+// direction derives from which side carries it; the put|get:local:remote
+// shapes stay the explicit aliases.
+
+func parseSftpPositional(src, dst string) (string, string, bool, error) {
+	srcRemote := strings.HasPrefix(src, ":")
+	dstRemote := strings.HasPrefix(dst, ":")
+	if srcRemote == dstRemote {
+		return "", "", false, fmt.Errorf("--sftp wants exactly one remote operand with the leading colon (--sftp ./file :/remote/path or --sftp :/remote/path ./file)")
+	}
+	local, remote := src, dst
+	if srcRemote {
+		local, remote = dst, src
+	}
+	remote = remote[1:] // drop the leading colon (exactly one operand carries it)
+	upload := dstRemote
+	if local == "" || remote == "" {
+		return "", "", false, fmt.Errorf("--sftp wants both paths non-empty")
+	}
+	return local, remote, upload, nil
+}
+
+func isASCIILetter(symbol byte) bool {
+	return (symbol >= 'A' && symbol <= 'Z') || (symbol >= 'a' && symbol <= 'z')
+}
+
+// parseSftpSpecAlias parses the explicit "put|get:local:remote" transfer spec:
+// a colon right behind the drive letter rides the path, the next one ends the
+// local side (the remote is the unix path of the server).
+func parseSftpSpecAlias(spec string) (local, remote string, upload bool, err error) {
+	rest := spec
+	switch {
+	case strings.HasPrefix(rest, "put:"):
+		upload = true
+		rest = rest[4:]
+	case strings.HasPrefix(rest, "get:"):
+		rest = rest[4:]
+	default:
+		return "", "", false, fmt.Errorf("the transfer spec wants put|get:local:remote")
+	}
+	sep := strings.Index(rest, ":")
+	if sep == 1 && isASCIILetter(rest[0]) {
+		next := strings.Index(rest[2:], ":")
+		if next < 0 {
+			return "", "", false, fmt.Errorf("the transfer spec wants put|get:local:remote")
+		}
+		sep = 2 + next
+	}
+	if sep <= 0 || sep == len(rest)-1 {
+		return "", "", false, fmt.Errorf("the transfer spec wants put|get:local:remote")
+	}
+	return rest[:sep], rest[sep+1:], upload, nil
+}
+
+// parseSftpURL parses the connection operand of the --sftp form:
+// user@host[:port][/url_path] — the remote path never rides it (it lives in
+// the colon-led operand).
+func parseSftpURL(spec string, defaultPort int, defaultURLPath string) (transferTarget, error) {
+	target := transferTarget{port: defaultPort, urlPath: defaultURLPath}
+	at := strings.Index(spec, "@")
+	if at <= 0 {
+		return target, fmt.Errorf("%q is not a connection operand (expected user@host[:port][/url_path])", spec)
+	}
+	target.username = spec[:at]
+	hostPart := spec[at+1:]
+	if strings.HasPrefix(hostPart, "[") {
+		return target, fmt.Errorf("%q: bracketed IPv6 literals are not supported in the --sftp operand (use the -transfer form or a host name)", spec)
+	}
+	urlPath := defaultURLPath
+	if slash := strings.Index(hostPart, "/"); slash >= 0 {
+		urlPath = hostPart[slash:] // keeps the leading slash
+		hostPart = hostPart[:slash]
+	}
+	port := defaultPort
+	if colon := strings.LastIndex(hostPart, ":"); colon >= 0 {
+		if colon == 0 || !digitsOnly(hostPart[colon+1:]) {
+			return target, fmt.Errorf("%q has an invalid host:port part %q", spec, hostPart)
+		}
+		port = atoi(hostPart[colon+1:], defaultPort)
+		hostPart = hostPart[:colon]
+	}
+	if hostPart == "" {
+		return target, fmt.Errorf("%q is missing the host", spec)
+	}
+	target.hostname = hostPart
+	target.port = port
+	target.urlPath = urlPath
+	return target, nil
+}
+
+// resolveSftpOperands wires the --sftp operands (the connection URL is
+// stripped by the caller): one put|get: alias operand or two positional ones.
+func resolveSftpOperands(operands []string) (local, remote string, upload bool, err error) {
+	switch len(operands) {
+	case 1:
+		return parseSftpSpecAlias(operands[0])
+	case 2:
+		return parseSftpPositional(operands[0], operands[1])
+	default:
+		return "", "", false, fmt.Errorf("--sftp wants the transfer spec (one put|get:local:remote alias operand or two positional operands) followed by the connection URL")
+	}
+}
+
 // buildTransferURL assembles the connection URL for a transfer target, with
 // the port and URL path resolved from the operand (or -P/-U defaults).
 func buildTransferURL(target transferTarget) *url.URL {

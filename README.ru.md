@@ -207,7 +207,7 @@ ssh3 max@my-server.example.org/ssh3-term -i ~/.ssh/id_ed25519
 
 ### Передача файлов
 
-Stage 2 добавляет режим `ssh3 -transfer` поверх отдельного SFTP-канала (созданные
+Stage 2 добавляет режим `ssh3 --sftp` поверх отдельного SFTP-канала (созданные
 файлы принадлежат сессионному пользователю). Изоляция путей по умолчанию
 следует модели sshd (`-sftp-jail chroot`): сервер перезапускает короткоживущий
 дочерний процесс на сессию, который делает chroot в домашний каталог
@@ -215,32 +215,48 @@ Stage 2 добавляет режим `ssh3 -transfer` поверх отдель
 обеспечивает ядро, а сетевой процесс никогда не открывает файлы пользователя.
 `-sftp-jail lexical` сохраняет исторический in-process джейл (лексическая
 проверка префикса; действуют привилегии самого процесса сервера — имеет
-смысл только для непривилегированного однопользовательского сервера):
+смысл только для непривилегированного однопользовательского сервера).
+
+Направление задаётся по канону scp: удалённая нога несёт ведущее двоеточие
+(хост сессии подразумевается), удалённая нога ровно одна, URL соединения
+идёт последним операндом:
 
 ```bash
-# загрузка файла (remote-операнд последний)
-ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
+# загрузка файла
+ssh3 --sftp ~/report.pdf :docs/report.pdf max@my-server.example.org/ssh3-term
 
 # загрузка каталога целиком, рекурсивно
-ssh3 -transfer -r ~/project-dir max@my-server.example.org/ssh3-term:backups/
+ssh3 --sftp -r ~/project-dir :backups/ max@my-server.example.org/ssh3-term
 
-# скачивание (remote-операнд первый)
-ssh3 -transfer max@my-server.example.org/ssh3-term:logs/app.log ./app.log
+# скачивание
+ssh3 --sftp :logs/app.log ./app.log max@my-server.example.org/ssh3-term
 
 # докачка прерванных передач вместо перезаписи
-ssh3 -transfer --continue big-disk-image.raw max@my-server.example.org/ssh3-term:images/raw
+ssh3 --sftp --continue big-disk-image.raw :images/raw max@my-server.example.org/ssh3-term
 
 # форсировать проверку SHA-256 перечитыванием удалённого файла
 # (автоматически для передач больше 32 МиБ)
-ssh3 -transfer --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
+ssh3 --sftp --checksum data.bin :data.bin max@my-server.example.org/ssh3-term
+
+# явные алиасы put|get: (обе головы несут local:remote)
+ssh3 --sftp put:~/report.pdf:docs/report.pdf max@my-server.example.org/ssh3-term
+ssh3 --sftp get:./app.log:logs/app.log max@my-server.example.org/ssh3-term
+```
+
+Старая форма `-transfer SRC DST` — один операнд
+`user@host:port/url_path:remote_path` и один локальный — остаётся
+устаревшим алиасом и продолжает работать:
+
+```bash
+ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
 ```
 
 Примечания: порт по умолчанию 443, URL-путь — `/ssh3-term`; переопределяются
-флагами `-p` (ssh2-форма) и `-U`, либо полной формой операнда
-`user@host:port/url_path:remote_path` (форковский `-P` в режиме передачи
-работает как устаревший алиас `-p`). Нерегулярные файлы (симлинки,
-устройства) пропускаются при рекурсивной передаче, пустой каталог создаётся
-на противоположной стороне. Старая форковская форма передачи `-f` выведена —
+флагами `-p` (ssh2-форма) и `-U`, либо полной формой операнда соединения
+`user@host:port/url_path` (форковский `-P` в режиме передачи работает как
+устаревший алиас `-p`). Нерегулярные файлы (симлинки, устройства)
+пропускаются при рекурсивной передаче, пустой каталог создаётся на
+противоположной стороне. Старая форковская форма передачи `-f` выведена —
 флаг теперь означает ssh2-фоновый режим (таблица паритета выше).
 
 ## Контроль-мастер (мультиплексирование соединений)

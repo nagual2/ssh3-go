@@ -206,7 +206,7 @@ ssh3 max@my-server.example.org/ssh3-term -i ~/.ssh/id_ed25519
 
 ### Dateiübertragung
 
-Stage 2 ergänzt den `ssh3 -transfer`-Modus über einen dedizierten SFTP-Kanal (angelegte
+Stage 2 ergänzt den `ssh3 --sftp`-Modus über einen dedizierten SFTP-Kanal (angelegte
 Dateien gehören dem Sitzungsbenutzer). Die Pfad-Isolation folgt standardmäßig
 dem sshd-Modell (`-sftp-jail chroot`): der Server startet pro Sitzung einen
 kurzlebigen Kindprozess, der in das Home-Verzeichnis des Benutzers chrootet und
@@ -214,29 +214,45 @@ vor dem ersten Pfadzugriff auf dessen uid/gid wechselt — die Einschließung
 übernimmt der Kernel, und der netzseitige Prozess öffnet nie Benutzerdateien.
 `-sftp-jail lexical` erhält das historische In-Process-Jail (lexikalische
 Präfixprüfung; es gelten die eigenen Privilegien des Serverprozesses — nur
-sinnvoll für einen unprivilegierten Single-User-Server):
+sinnvoll für einen unprivilegierten Single-User-Server).
+
+Die Richtung folgt dem scp-Kanon: der Remote-Operand trägt einen führenden
+Doppelpunkt (der Sitzungshost ist impliziert), genau ein Remote-Operand ist
+erforderlich, und die Verbindungs-URL kommt als letzter Operand:
 
 ```bash
-# Datei hochladen (Remote-Operand zuletzt)
-ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
+# Datei hochladen
+ssh3 --sftp ~/report.pdf :docs/report.pdf max@my-server.example.org/ssh3-term
 
 # Verzeichnis rekursiv hochladen
-ssh3 -transfer -r ~/project-dir max@my-server.example.org/ssh3-term:backups/
+ssh3 --sftp -r ~/project-dir :backups/ max@my-server.example.org/ssh3-term
 
-# Herunterladen (Remote-Operand zuerst)
-ssh3 -transfer max@my-server.example.org/ssh3-term:logs/app.log ./app.log
+# Herunterladen
+ssh3 --sftp :logs/app.log ./app.log max@my-server.example.org/ssh3-term
 
 # Unterbrochene Übertragungen fortsetzen statt zu überschreiben
-ssh3 -transfer --continue big-disk-image.raw max@my-server.example.org/ssh3-term:images/raw
+ssh3 --sftp --continue big-disk-image.raw :images/raw max@my-server.example.org/ssh3-term
 
 # SHA-256-Prüfung durch erneutes Lesen der Remote-Datei erzwingen
 # (automatisch bei Übertragungen über 32 MiB)
-ssh3 -transfer --checksum data.bin max@my-server.example.org/ssh3-term:data.bin
+ssh3 --sftp --checksum data.bin :data.bin max@my-server.example.org/ssh3-term
+
+# die expliziten put|get:-Aliase (beide Köpfe tragen local:remote)
+ssh3 --sftp put:~/report.pdf:docs/report.pdf max@my-server.example.org/ssh3-term
+ssh3 --sftp get:./app.log:logs/app.log max@my-server.example.org/ssh3-term
+```
+
+Die ältere Form `-transfer SRC DST` — ein Operand
+`user@host:port/url_path:remote_path` und ein lokaler — bleibt als
+veralteter Alias erhalten und funktioniert weiter:
+
+```bash
+ssh3 -transfer ~/report.pdf max@my-server.example.org/ssh3-term:docs/report.pdf
 ```
 
 Hinweise: Standardport 443, URL-Pfad `/ssh3-term`; überschreibbar mit `-p`
-(ssh2-Form) und `-U`, oder als vollständige Form
-`user@host:port/url_path:remote_path` (das Fork-eigene `-P` gilt im
+(ssh2-Form) und `-U`, oder als vollständige Verbindungsform
+`user@host:port/url_path` (das Fork-eigene `-P` gilt im
 Übertragungsmodus als veralteter Alias von `-p`). Unreguläre Dateien
 (Symlinks, Geräte) werden bei rekursiven Übertragungen übersprungen, ein
 leeres Verzeichnis wird auf der Gegenseite angelegt. Die alte Fork-eigene
