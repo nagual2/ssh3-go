@@ -50,6 +50,15 @@ require (
 
 go 1.26.0
 
+// CVE-2026-98432 (Linux IPv4/TCP use-after-free): since Go 1.24 the net
+// package asks the kernel for MPTCP on listen sockets by default, and the
+// demonstrated remote-root exploit needs exactly that MPTCP listener.
+// The pin keeps every binary of this module on plain TCP regardless of
+// the host GODEBUG; the real fix stays with the kernel update.
+godebug (
+	multipathtcp=0
+)
+
 // The io_uring send-path experiments live in the nagual2/quic-go fork
 // (branch feat/io-uring-send, upstream v0.63.0 + patch behind
 // QUIC_GO_IO_URING_SEND, benches verdict: parity with upstream).
