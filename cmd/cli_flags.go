@@ -365,3 +365,52 @@ func parseEscapeChar(value string) (byte, error) {
 		return 0, fmt.Errorf("invalid EscapeChar %q: want one ASCII printable character, a ^X control form or none", value)
 	}
 }
+
+// parsePasswordCredentials splits the --password user:pass value: the first
+// colon separates the user from the password (the password may contain
+// colons), both halves are mandatory and the case rides untouched (the
+// password is case-sensitive).
+func parsePasswordCredentials(value string) (user, password string, err error) {
+	user, password, found := strings.Cut(value, ":")
+	switch {
+	case !found:
+		return "", "", fmt.Errorf("the value must ride the user:pass form, no colon found in %q", value)
+	case user == "":
+		return "", "", fmt.Errorf("the value must ride the user:pass form, the user before the colon is empty")
+	case password == "":
+		return "", "", fmt.Errorf("the value must ride the user:pass form, the password after the colon is empty")
+	}
+	return user, password, nil
+}
+
+// passwordConflicts gathers the flags the --password credentials form cannot
+// share a run with. The client tries the first auth method only, so a run
+// carrying the credentials and another authentication source would silently
+// pick a winner: the first conflict refuses with both flag names instead.
+type passwordConflicts struct {
+	IdentityFile   bool // -i: a private key file
+	PubkeyForAgent bool // -pubkey-for-agent: an agent key
+	UsePassword    bool // -use-password: the interactive prompt
+	OIDCIssuer     bool // -use-oidc: the OIDC browser flow
+	OIDCConfig     bool // -oidc-config: an explicit OIDC config file
+}
+
+// first returns the name of the first conflicting flag, empty when the
+// credentials may ride alone.
+func (c passwordConflicts) first() string {
+	for _, conflict := range []struct {
+		set  bool
+		name string
+	}{
+		{c.IdentityFile, "-i"},
+		{c.PubkeyForAgent, "-pubkey-for-agent"},
+		{c.UsePassword, "-use-password"},
+		{c.OIDCIssuer, "-use-oidc"},
+		{c.OIDCConfig, "-oidc-config"},
+	} {
+		if conflict.set {
+			return conflict.name
+		}
+	}
+	return ""
+}

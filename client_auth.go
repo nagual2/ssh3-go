@@ -20,7 +20,14 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
-type PasswordAuthMethod struct{}
+// PasswordAuthMethod is the classical password authentication. The empty
+// struct is the interactive form: the client prompts on the terminal. The
+// credentials form (--password user:pass) carries the user and the password
+// and rides without any prompt.
+type PasswordAuthMethod struct {
+	username string
+	password string
+}
 type OidcAuthMethod struct {
 	doPKCE bool
 	config *oidc.OIDCConfig
@@ -43,6 +50,35 @@ type AgentAuthMethod struct {
 
 func NewPasswordAuthMethod() *PasswordAuthMethod {
 	return &PasswordAuthMethod{}
+}
+
+// NewPasswordAuthMethodWithCredentials builds the non-interactive form of the
+// password method: the identity is built from the credentials given up front
+// (--password user:pass), so no terminal prompt happens. The password rides
+// case-sensitively; the username joins the Basic auth of passwordIdentity.
+func NewPasswordAuthMethodWithCredentials(username, password string) *PasswordAuthMethod {
+	return &PasswordAuthMethod{
+		username: username,
+		password: password,
+	}
+}
+
+// HasCredentials reports whether the method carries the credentials given up
+// front: such a method authenticates without the interactive prompt.
+func (m *PasswordAuthMethod) HasCredentials() bool {
+	return m.password != ""
+}
+
+// Username returns the user of the credentials form (empty for the
+// interactive one; the connection user serves then).
+func (m *PasswordAuthMethod) Username() string {
+	return m.username
+}
+
+// Password returns the password of the credentials form (empty for the
+// interactive one, whose password comes from the prompt).
+func (m *PasswordAuthMethod) Password() string {
+	return m.password
 }
 
 func (m *PasswordAuthMethod) IntoIdentity(password string) Identity {

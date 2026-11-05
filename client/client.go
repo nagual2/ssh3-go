@@ -401,14 +401,21 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 			switch m := method.(type) {
 			case *ssh3.PasswordAuthMethod:
 				log.Debug().Msgf("try password-based auth")
-				fmt.Printf("password for %s:", hostUrl.String())
-				password, err := term.ReadPassword(int(syscall.Stdin))
-				fmt.Println()
-				if err != nil {
-					log.Error().Msgf("could not get password: %s", err)
-					return nil, err
+				if m.HasCredentials() {
+					// the credentials form (--password user:pass): the identity
+					// rides without any terminal prompt
+					log.Debug().Msgf("the credentials ride the command line, no prompt")
+					identity = m.IntoIdentity(m.Password())
+				} else {
+					fmt.Printf("password for %s:", hostUrl.String())
+					password, err := term.ReadPassword(int(syscall.Stdin))
+					fmt.Println()
+					if err != nil {
+						log.Error().Msgf("could not get password: %s", err)
+						return nil, err
+					}
+					identity = m.IntoIdentity(string(password))
 				}
-				identity = m.IntoIdentity(string(password))
 			case *ssh3.PrivkeyFileAuthMethod:
 				log.Debug().Msgf("try file-based pubkey auth using file %s", m.Filename())
 				identity, err = m.IntoIdentityWithoutPassphrase()

@@ -209,3 +209,72 @@ func TestVerifyHostKeyDNSAllowsAlgorithm(t *testing.T) {
 		t.Error("yes:rsa must refuse an ed25519 host key")
 	}
 }
+
+// --password user:pass: the split rides the first colon (the password may
+// contain colons), both halves are mandatory and the case stays untouched.
+func TestParsePasswordCredentials(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       string
+		wantUser    string
+		wantPass    string
+		wantErr     bool
+		errContains string
+	}{
+		{name: "plain", value: "user:pass", wantUser: "user", wantPass: "pass"},
+		{name: "password with colons", value: "user:pa:ss:word", wantUser: "user", wantPass: "pa:ss:word"},
+		{name: "case rides untouched", value: "User:PaSS", wantUser: "User", wantPass: "PaSS"},
+		{name: "empty user", value: ":pass", wantErr: true, errContains: "user"},
+		{name: "empty password", value: "user:", wantErr: true, errContains: "password"},
+		{name: "no colon", value: "userpass", wantErr: true, errContains: "user:pass"},
+		{name: "empty value", value: "", wantErr: true, errContains: "user:pass"},
+		{name: "only a colon", value: ":", wantErr: true, errContains: "user"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			user, pass, err := parsePasswordCredentials(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parsePasswordCredentials(%q) accepted the value", tt.value)
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("refusal %q does not mention %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parsePasswordCredentials(%q) returned error: %s", tt.value, err)
+			}
+			if user != tt.wantUser || pass != tt.wantPass {
+				t.Fatalf("parsePasswordCredentials(%q) = (%q, %q), want (%q, %q)", tt.value, user, pass, tt.wantUser, tt.wantPass)
+			}
+		})
+	}
+}
+
+// --password stays alone: every competing authentication source refuses with
+// the name of the conflicting flag, an empty set rides.
+func TestPasswordConflictsFirst(t *testing.T) {
+	if got := (passwordConflicts{}).first(); got != "" {
+		t.Fatalf("no conflicting flag reported %q, want an empty ride", got)
+	}
+	tests := []struct {
+		name      string
+		conflicts passwordConflicts
+		want      string
+	}{
+		{"identity file", passwordConflicts{IdentityFile: true}, "-i"},
+		{"agent key", passwordConflicts{PubkeyForAgent: true}, "-pubkey-for-agent"},
+		{"interactive prompt", passwordConflicts{UsePassword: true}, "-use-password"},
+		{"oidc issuer", passwordConflicts{OIDCIssuer: true}, "-use-oidc"},
+		{"oidc config", passwordConflicts{OIDCConfig: true}, "-oidc-config"},
+		{"first wins", passwordConflicts{UsePassword: true, OIDCIssuer: true}, "-use-password"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.conflicts.first(); got != tt.want {
+				t.Fatalf("first() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

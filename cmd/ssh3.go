@@ -538,8 +538,8 @@ func parseAddrPort(addrPort string) (localPort int, remoteIP net.IP, remotePort 
 // getConfigOptions resolves the effective username/hostname/port/urlpath for
 // the target: the -p/-o Port override beats the operand port, which beats the
 // ~/.ssh/config port; for the username the operand user@ beats the -o User
-// override, which beats the config user.
-func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionParsers map[client_config.OptionName]client_config.OptionParser, portOverride uint16, userOverride string) (*client_config.Config, error) {
+// override, which beats the --password user, which beats the config user.
+func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionParsers map[client_config.OptionName]client_config.OptionParser, portOverride uint16, userOverride string, passwordUser string) (*client_config.Config, error) {
 	urlHostname, urlPort := hostUrl.Hostname(), hostUrl.Port()
 	// The user known before reading the config: it feeds the Match user
 	// criterion and the default username resolution below.
@@ -586,6 +586,12 @@ func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionPars
 		username = userOverride
 	}
 	if username == "" {
+		// the user of --password user:pass: the credential names the account
+		// it authenticates, so it rides ahead of the config default (the
+		// mismatch with an explicit user@ or -o User refuses in ClientMain)
+		username = passwordUser
+	}
+	if username == "" {
 		username = configUser
 	}
 	if username == "" {
@@ -607,8 +613,8 @@ func getConfigOptions(hostUrl *url.URL, sshConfig *matchcfg.Resolver, optionPars
 	return client_config.NewConfig(username, hostname, port, urlPath, configAuthMethods, pluginOptions)
 }
 
-func getConnectionMaterialFromURL(hostUrl *url.URL, sshConfig *matchcfg.Resolver, cliAuthMethods []interface{}, cliOptions map[client_config.OptionName]client_config.Option, optionParsers map[client_config.OptionName]client_config.OptionParser, portOverride uint16, userOverride string) (agent.ExtendedAgent, *client_config.Config, error) {
-	configOptions, err := getConfigOptions(hostUrl, sshConfig, optionParsers, portOverride, userOverride)
+func getConnectionMaterialFromURL(hostUrl *url.URL, sshConfig *matchcfg.Resolver, cliAuthMethods []interface{}, cliOptions map[client_config.OptionName]client_config.Option, optionParsers map[client_config.OptionName]client_config.OptionParser, portOverride uint16, userOverride string, passwordUser string) (agent.ExtendedAgent, *client_config.Config, error) {
+	configOptions, err := getConfigOptions(hostUrl, sshConfig, optionParsers, portOverride, userOverride, passwordUser)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not apply config to %s: %s", hostUrl, err)
 	}
@@ -810,6 +816,7 @@ func ClientMain() int {
 	// (CLI-parity wave, CTO_TASK §7c).
 	keyLogFile := flag.String("keylog", "", "Write QUIC TLS keys and master secret in the specified keylog file: only for debugging purpose")
 	passwordAuthentication := flag.Bool("use-password", false, "if set, do classical password authentication")
+	passwordCreds := flag.String("password", "", "password authentication with the credentials given up front as user:pass (the non-interactive form of -use-password; the password may contain colons, the split rides the first one)")
 	insecure := flag.Bool("insecure", false, "if set, skip server certificate verification")
 	strictHostKeyCheckingFlag := flag.String("strict-host-key-checking", "",
 		"StrictHostKeyChecking policy: yes, accept-new, no or ask (default: ask; overrides -o and ~/.ssh/config)")
@@ -906,6 +913,7 @@ func ClientMain() int {
 	controlPathFlagSet := false
 	controlPersistFlagSet := false
 	clientPortFlagSet := false
+	pubkeyForAgentFlagSet := false
 	flag.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "strict-host-key-checking":
@@ -920,6 +928,8 @@ func ClientMain() int {
 			controlPersistFlagSet = true
 		case "p":
 			clientPortFlagSet = true
+		case "pubkey-for-agent":
+			pubkeyForAgentFlagSet = true
 		}
 	})
 
@@ -951,6 +961,31 @@ func ClientMain() int {
 			return -1
 		}
 		subsystemName = name
+	}
+
+	// --password user:pass (the non-interactive basic auth): the value is
+	// split before anything dials, and the credential form stays alone —
+	// a run that also carries a key, an agent key, the interactive prompt
+	// or an OIDC flow refuses with both flag names
+	passwordUser, passwordValue := "", ""
+	if *passwordCreds != "" {
+		var credErr error
+		passwordUser, passwordValue, credErr = parsePasswordCredentials(*passwordCreds)
+		if credErr != nil {
+			fmt.Fprintf(os.Stderr, "--password: %s\n", credErr)
+			return -1
+		}
+		conflicts := passwordConflicts{
+			IdentityFile:   *identityFile != "",
+			PubkeyForAgent: pubkeyForAgentFlagSet,
+			UsePassword:    *passwordAuthentication,
+			OIDCIssuer:     *issuerUrl != "",
+			OIDCConfig:     *oidcConfigFileName != "",
+		}
+		if conflict := conflicts.first(); conflict != "" {
+			fmt.Fprintf(os.Stderr, "--password cannot be combined with %s\n", conflict)
+			return -1
+		}
 	}
 
 	cliOptions := make(map[client_config.OptionName]client_config.Option)
@@ -1505,6 +1540,11 @@ func ClientMain() int {
 	if !useOIDC {
 		if *passwordAuthentication {
 			cliAuthMethods = append(cliAuthMethods, ssh3.NewPasswordAuthMethod())
+		} else if *passwordCreds != "" {
+			// the credentials form (--password user:pass): the method rides
+			// with its credentials, the client builds the identity without
+			// any prompt
+			cliAuthMethods = append(cliAuthMethods, ssh3.NewPasswordAuthMethodWithCredentials(passwordUser, passwordValue))
 		}
 	} else {
 		// for now, only perform OIDC if it was explicitly asked by the user
@@ -1542,7 +1582,23 @@ func ClientMain() int {
 		log.Error().Msgf("Could not get plugins options parsers: %s", err)
 		return -1
 	}
-	agentClient, options, err := getConnectionMaterialFromURL(parsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers, portOverride, userOption)
+	// the user of --password user:pass names the account it authenticates:
+	// a contradiction with another explicit user refuses instead of silently
+	// authenticating one account with the credentials of another one
+	if passwordUser != "" {
+		for _, explicit := range []struct{ source, user string }{
+			{"the user@ of the connection URL", parsedUrl.User.Username()},
+			{"the ?user= query parameter", parsedUrl.Query().Get("user")},
+			{"-o User", userOption},
+		} {
+			if explicit.user != "" && explicit.user != passwordUser {
+				fmt.Fprintf(os.Stderr, "--password: the user %q does not match %s (%q)\n", passwordUser, explicit.source, explicit.user)
+				return -1
+			}
+		}
+	}
+
+	agentClient, options, err := getConnectionMaterialFromURL(parsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers, portOverride, userOption, passwordUser)
 	if err != nil {
 		log.Error().Msgf("Could not get connection material for %s: %s", parsedUrl, err)
 		return -1
@@ -1796,7 +1852,7 @@ func ClientMain() int {
 				log.Error().Msgf("Could not parse proxy host URL %s: %s", hopUrl, err)
 				return -1
 			}
-			proxyAgentClient, proxyOptions, err := getConnectionMaterialFromURL(proxyParsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers, 0, "")
+			proxyAgentClient, proxyOptions, err := getConnectionMaterialFromURL(proxyParsedUrl, sshConfig, cliAuthMethods, cliOptions, optionsParsers, 0, "", "")
 			if err != nil {
 				log.Error().Msgf("Could not get connection material for proxy %s: %s", hopUrl, err)
 				return -1
