@@ -244,6 +244,10 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 	qconf.HandshakeIdleTimeout = ssh2HandshakeTimeout
 
 	hostKey := options.CanonicalHostFormat()
+	// selfNamed tracks the selfsigned.ssh3 ServerName hack (CERT-VERIFICATION-CANON.md
+	// 2.4): under the hack the hostname is not proven against the real target, so the
+	// post-handshake rotation re-pin stays off (the self-signed rotation rides SSHFP)
+	selfNamed := false
 	if certs, ok := knownHosts[hostKey]; ok {
 		foundSelfsignedSSH3 := false
 
@@ -260,6 +264,7 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 			// Otherwise, TLS refuses to validate a certificate without IP SANs
 			// if the hostname is an IP address.
 			tlsConf.ServerName = "selfsigned.ssh3"
+			selfNamed = true
 		}
 	}
 
@@ -300,11 +305,37 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 		// pins ourselves so that a silently rotated certificate is detected.
 		if !skipHostVerification {
 			if peerCerts := qClient.ConnectionState().TLS.PeerCertificates; len(peerCerts) > 0 {
+				// SSHFP (VerifyHostKeyDNS) rides BEFORE the pin verdicts (canon
+				// 2.5): a mismatch vetoes the connection — and the rotation
+				// re-pin — before any record is written. The pinned-certificate
+				// check answers "is this the key we saw last time?", SSHFP
+				// answers "does the zone vouch for this key?". options.Hostname()
+				// is used rather than the canonical host key because SSHFP
+				// records are published for the bare DNS name (user@ and :port
+				// carry no DNS meaning).
+				if _, err := checkHostKeySSHFP(ctx, options.Hostname(), peerCerts[0], verifyHostKeyDNS, strictHostKeyChecking); err != nil {
+					qClient.CloseWithError(quic.ApplicationErrorCode(0), "the SSHFP records of the server do not match its host key")
+					return nil, -1
+				}
+
 				switch knownHosts.CheckCertificate(hostKey, peerCerts[0]) {
 				case ssh3.HostCertificateChanged:
 					if strictHostKeyChecking == ssh3.StrictHostKeyCheckingNo {
 						log.Warn().Msgf("StrictHostKeyChecking=no: the certificate of %s differs from the one pinned in %s (received: SHA256:%s), connecting anyway (insecure)",
 							hostKey, knownHostsPath, util.Sha256Fingerprint(peerCerts[0].Raw))
+					} else if !selfNamed {
+						// CERT-VERIFICATION-CANON.md 2.4: the handshake verified the
+						// chain against a system CA and the SAN covered the real
+						// hostname — the rotation is legitimate, re-pin and ride.
+						// The selfsigned.ssh3 hack (selfNamed) keeps the old
+						// behaviour: under it the hostname is not proven against
+						// the target, the self-signed rotation rides SSHFP
+						if err := ssh3.ReplaceKnownHost(knownHostsPath, hostKey, peerCerts[0]); err != nil {
+							log.Error().Msgf("could not re-pin the rotated certificate in %s: %s", knownHostsPath, err)
+							qClient.CloseWithError(quic.ApplicationErrorCode(0), "could not re-pin the rotated certificate")
+							return nil, -1
+						}
+						log.Info().Msgf("certificate rotated, chain valid: re-pinned %s in %s", hostKey, knownHostsPath)
 					} else {
 						logCertificateMismatch(peerCerts[0])
 						qClient.CloseWithError(quic.ApplicationErrorCode(0), "server certificate does not match the pinned one")
@@ -323,17 +354,6 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 					}
 				case ssh3.HostCertificateMatches:
 					// the pinned certificate is the one being used
-				}
-
-				// SSHFP (VerifyHostKeyDNS) is checked on the very same
-				// certificate: the pinned-certificate check answers "is this the
-				// key we saw last time?", SSHFP answers "does the zone vouch for
-				// this key?". options.Hostname() is used rather than the
-				// canonical host key because SSHFP records are published for the
-				// bare DNS name (user@ and :port carry no DNS meaning).
-				if _, err := checkHostKeySSHFP(ctx, options.Hostname(), peerCerts[0], verifyHostKeyDNS, strictHostKeyChecking); err != nil {
-					qClient.CloseWithError(quic.ApplicationErrorCode(0), "the SSHFP records of the server do not match its host key")
-					return nil, -1
 				}
 			}
 		}

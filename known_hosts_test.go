@@ -152,3 +152,67 @@ func TestParseKnownHostsInvalidLines(t *testing.T) {
 		t.Errorf("invalidLines = %v, want the three invalid lines [0 1 2]", invalidLines)
 	}
 }
+
+// TestReplaceKnownHost rides the rotation path of CERT-VERIFICATION-CANON.md
+// 2.4: the replaced host keeps only the new certificate, the other hosts and
+// the malformed lines survive, the missing file rides the plain append.
+func TestReplaceKnownHost(t *testing.T) {
+	certA := newSelfSignedCert(t, "rotatea.ssh3")
+	certB := newSelfSignedCert(t, "rotateb.ssh3")
+	certOther := newSelfSignedCert(t, "rotateother.ssh3")
+
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "known_hosts")
+
+	if err := AppendKnownHost(filename, "example.org:443/ssh3-term", certA); err != nil {
+		t.Fatalf("could not append known host: %s", err)
+	}
+	if err := AppendKnownHost(filename, "other.example.org:443/", certOther); err != nil {
+		t.Fatalf("could not append known host: %s", err)
+	}
+
+	certBOldPins := func() bool {
+		knownHosts, _, err := ParseKnownHosts(filename)
+		if err != nil {
+			t.Fatalf("could not parse known hosts: %s", err)
+		}
+		return knownHosts.CheckCertificate("example.org:443/ssh3-term", certA) == HostCertificateMatches
+	}
+	if !certBOldPins() {
+		t.Fatal("certA should match before the rotation re-pin")
+	}
+
+	if err := ReplaceKnownHost(filename, "example.org:443/ssh3-term", certB); err != nil {
+		t.Fatalf("could not replace known host: %s", err)
+	}
+
+	knownHosts, invalidLines, err := ParseKnownHosts(filename)
+	if err != nil {
+		t.Fatalf("could not parse known hosts after the replace: %s", err)
+	}
+	if len(invalidLines) != 0 {
+		t.Errorf("invalidLines = %v, want none", invalidLines)
+	}
+	if knownHosts.CheckCertificate("example.org:443/ssh3-term", certB) != HostCertificateMatches {
+		t.Error("the rotated certificate should match after the replace")
+	}
+	if knownHosts.CheckCertificate("example.org:443/ssh3-term", certA) != HostCertificateChanged {
+		t.Error("the old certificate should be gone from the store (a changed cert against the new pin)")
+	}
+	if knownHosts.CheckCertificate("other.example.org:443/", certOther) != HostCertificateMatches {
+		t.Error("the other host pin should survive the rewrite")
+	}
+
+	// the missing store rides the plain append
+	missing := filepath.Join(dir, "absent-known_hosts")
+	if err := ReplaceKnownHost(missing, "example.org:443/ssh3-term", certB); err != nil {
+		t.Fatalf("could not replace on the missing store: %s", err)
+	}
+	knownHosts, _, err = ParseKnownHosts(missing)
+	if err != nil {
+		t.Fatalf("could not parse the appended store: %s", err)
+	}
+	if knownHosts.CheckCertificate("example.org:443/ssh3-term", certB) != HostCertificateMatches {
+		t.Error("the appended store should match the new certificate")
+	}
+}

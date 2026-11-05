@@ -139,3 +139,49 @@ func AppendKnownHost(filename string, host string, cert *x509.Certificate) error
 
 	return nil
 }
+
+// ReplaceKnownHost rewrites the certificates pinned for host: the old
+// certificate lines of the host drop, the presented certificate rides
+// alone. The rotation path of CERT-VERIFICATION-CANON.md 2.4: the chain
+// verified against a system CA and the SAN covered the hostname, so the
+// rotated certificate is the legitimate successor of the pinned one.
+// The missing file rides the plain append; the rewrite is atomic-ish
+// (the temp file + rename, 0600 preserved).
+func ReplaceKnownHost(filename string, host string, cert *x509.Certificate) error {
+	_, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return AppendKnownHost(filename, host, cert)
+	}
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+
+	encodedCert := base64.StdEncoding.EncodeToString(cert.Raw)
+	newLine := fmt.Sprintf("%s x509-certificate %s", host, encodedCert)
+
+	var kept strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == host && fields[1] == "x509-certificate" {
+			continue // the rotated certificate replaces the old pins
+		}
+		if strings.TrimSpace(line) != "" {
+			kept.WriteString(line)
+			kept.WriteString("\n")
+		}
+	}
+	kept.WriteString(newLine)
+	kept.WriteString("\n")
+
+	tmp := filename + ".tmp"
+	if err := os.WriteFile(tmp, []byte(kept.String()), 0600); err != nil {
+		return err
+	}
+
+	return os.Rename(tmp, filename)
+}
