@@ -334,7 +334,12 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	// server lost the session) drops the early stream silently: the
 	// conversation below carries the full CONNECT.
 	rawConn := transport.NewRawClientConn(qconn)
-	if GetTicketCache().RetryContract() {
+
+	// the debug kill-switch of the early flight (SSH3_NO_EARLY=1): the
+	// tunnel and the resumption ride, the bare CONNECT does not leave —
+	// the interop legs split the 0-RTT shape from the tunnel shape
+
+	if os.Getenv("SSH3_NO_EARLY") == "" && GetTicketCache().RetryContract() {
 		earlyReq, err := http.NewRequest("CONNECT", requestUrl, nil)
 		if err == nil {
 			earlyReq.Proto = "ssh3"
