@@ -135,8 +135,10 @@ func localMask() uint64 {
 	return MaskDeflate | MaskLZ4 | MaskZstd
 }
 
-// Available returns the capability list of this build.
-func Available() string {
+// Names returns the codec names of the capability list of this build,
+// in the shared preference order (the canonical lowercase ones the
+// version string carries).
+func Names() []string {
 	parts := make([]string, 0, len(order))
 	for _, alg := range order {
 		if localMask()&maskOf(alg) == 0 {
@@ -144,7 +146,12 @@ func Available() string {
 		}
 		parts = append(parts, names[alg])
 	}
-	return strings.Join(parts, ",")
+	return parts
+}
+
+// Available returns the capability list of this build.
+func Available() string {
+	return strings.Join(Names(), ",")
 }
 
 // maskOf returns the capability bit of an algorithm id.
