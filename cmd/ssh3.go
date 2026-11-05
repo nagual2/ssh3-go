@@ -1910,13 +1910,15 @@ func ClientMain() int {
 			/*
 			 * the datagram budget probe (the canon dgram_need): the
 			 * tunnel channel of this hop carries the next level's
-			 * packets of up to its packet size plus the SSH3 framing,
-			 * and the peer's max_datagram_frame_size must cover the
-			 * whole datagram. quic-go refuses the oversized send
-			 * locally — the probe turns that into the clean refusal
-			 * before the deeper level dials into a dead tunnel (the
-			 * ssh3-c servers ship -d 1200, the canonical remediation
-			 * rides the message)
+			 * packets plus the SSH3 framing, and the peer's
+			 * max_datagram_frame_size must cover the whole datagram.
+			 * quic-go refuses the oversized send locally against
+			 * min(peer param, the current packet size estimate) — the
+			 * estimate grows with the path discovery on a direct hop,
+			 * so the probe retries briefly and reads the capacity from
+			 * the refusal; the plateau below the need is the peer
+			 * budget, and the clean refusal names the -d remediation
+			 * (the ssh3-c servers ship -d 1200)
 			 */
 
 			nextLevelSize, err := tunneledPacketSize(outerSize, hopIndex+1)
@@ -1925,10 +1927,36 @@ func ClientMain() int {
 				return -1
 			}
 
-			if err := qconn.SendDatagram(make([]byte, nextLevelSize+tunnelDatagramOverhead)); err != nil {
-				log.Error().Msgf("the proxy hop %d datagram budget does not cover the chain: %s", hopIndex+1, err)
-				log.Error().Msgf("run the hop server with -d >= %d (the max_datagram_frame_size transport parameter)", nextLevelSize+tunnelDatagramOverhead)
-				return -1
+			{
+				const ssh3Framing = 16 /* the conv and channel varints of the tunnel relay */
+
+				needed := nextLevelSize + ssh3Framing
+				probeDeadline := time.Now().Add(2500 * time.Millisecond)
+
+				for {
+					sendErr := qconn.SendDatagram(make([]byte, needed))
+
+					if sendErr == nil {
+						break
+					}
+
+					var tooLarge *quic.DatagramTooLargeError
+
+					if errors.As(sendErr, &tooLarge) && time.Now().Before(probeDeadline) {
+						time.Sleep(250 * time.Millisecond)
+						continue
+					}
+
+					var capacity int64
+					if errors.As(sendErr, &tooLarge) {
+						capacity = tooLarge.MaxDatagramPayloadSize
+					}
+
+					log.Error().Msgf("the proxy hop %d datagram budget does not cover the chain: need %d bytes, the peer carries %d",
+						hopIndex+1, needed, capacity)
+					log.Error().Msgf("run the hop server with -d >= %d (the max_datagram_frame_size transport parameter)", needed)
+					return -1
+				}
 			}
 
 			// each hop tunnels UDP towards the next one; the last hop tunnels
