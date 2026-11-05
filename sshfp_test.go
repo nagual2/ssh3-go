@@ -586,3 +586,64 @@ func TestSystemDNSServersAndEmptyResolver(t *testing.T) {
 		}
 	}
 }
+
+// The self-signed rotation of the canon §2.4: the host is pinned with certA,
+// the server comes back with the self-signed certB, and the SSHFP zone is the
+// only signal left to vouch for the new key — the verified record re-pins,
+// the absence of the DNS signal stays a refusal.
+func TestSSHFPVouchesSelfSignedRotation(t *testing.T) {
+	certA := newSelfSignedCert(t, "rotating.example.org")
+	certB := newSelfSignedCert(t, "rotating.example.org")
+	pinned := KnownHosts{"rotating.example.org:443/ssh3-term": {certA}}
+	hostKey := "rotating.example.org:443/ssh3-term"
+	if pinned.CheckCertificate(hostKey, certB) != HostCertificateChanged {
+		t.Fatal("the rotated certificate was not detected as changed")
+	}
+
+	algorithm, ok := HostKeyAlgorithm(certB)
+	if !ok {
+		t.Fatalf("the self-signed certificate carries no SSHFP algorithm (key type %T)", certB.PublicKey)
+	}
+	sha256Digest := sha256.Sum256(certB.Raw)
+	zone := &fakeSSHFPResolver{records: []SSHFP{{
+		Algorithm:   algorithm,
+		DigestType:  SSHFPDigestSHA256,
+		Fingerprint: sha256Digest[:],
+	}}}
+	verified := CheckSSHFP(context.Background(), hostKey, certB, zone)
+	if verified.Status != SSHFPStatusVerified {
+		t.Fatalf("the zone publishes the digest of certB: status = %s, want %s (err: %v)", verified.Status, SSHFPStatusVerified, verified.Err)
+	}
+	if !verified.VouchesRotation() {
+		t.Error("a verified record must vouch for the self-signed rotation")
+	}
+
+	silent := CheckSSHFP(context.Background(), hostKey, certB, &fakeSSHFPResolver{})
+	if silent.Status != SSHFPStatusNoRecords {
+		t.Fatalf("an empty zone gave status %s, want %s", silent.Status, SSHFPStatusNoRecords)
+	}
+	if silent.VouchesRotation() {
+		t.Error("an empty zone must not vouch for the rotation")
+	}
+}
+
+// Only a verified record is a proof: every soft verdict says nothing about
+// the key and must keep the self-signed rotation refused.
+func TestSSHFPResultVouchesRotation(t *testing.T) {
+	cases := []struct {
+		status  SSHFPStatus
+		vouches bool
+	}{
+		{SSHFPStatusNotChecked, false},
+		{SSHFPStatusVerified, true},
+		{SSHFPStatusNoRecords, false},
+		{SSHFPStatusLookupFailed, false},
+		{SSHFPStatusMismatch, false},
+	}
+	for _, c := range cases {
+		result := SSHFPResult{Status: c.status}
+		if got := result.VouchesRotation(); got != c.vouches {
+			t.Errorf("status %s: VouchesRotation() = %t, want %t", c.status, got, c.vouches)
+		}
+	}
+}

@@ -323,8 +323,10 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 				// answers "does the zone vouch for this key?". options.Hostname()
 				// is used rather than the canonical host key because SSHFP
 				// records are published for the bare DNS name (user@ and :port
-				// carry no DNS meaning).
-				if _, err := checkHostKeySSHFP(ctx, options.Hostname(), peerCerts[0], verifyHostKeyDNS, strictHostKeyChecking); err != nil {
+				// carry no DNS meaning). The verdict rides on: it vouches for
+				// the self-signed rotation re-pin below (canon 2.4).
+				sshfpResult, sshfpErr := checkHostKeySSHFP(ctx, options.Hostname(), peerCerts[0], verifyHostKeyDNS, strictHostKeyChecking)
+				if sshfpErr != nil {
 					qClient.CloseWithError(quic.ApplicationErrorCode(0), "the SSHFP records of the server do not match its host key")
 					return nil, -1
 				}
@@ -347,7 +349,21 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 							return nil, -1
 						}
 						log.Info().Msgf("certificate rotated, chain valid: re-pinned %s in %s", hostKey, knownHostsPath)
+					} else if sshfpResult.VouchesRotation() {
+						// CERT-VERIFICATION-CANON.md 2.4: under the selfsigned.ssh3
+						// anchor the hostname is not proven against the target, but
+						// the SSHFP zone just vouched for the new key (the verdict
+						// captured above) — the self-signed rotation is legitimate,
+						// re-pin and ride
+						if err := ssh3.ReplaceKnownHost(knownHostsPath, hostKey, peerCerts[0]); err != nil {
+							log.Error().Msgf("could not re-pin the rotated certificate in %s: %s", knownHostsPath, err)
+							qClient.CloseWithError(quic.ApplicationErrorCode(0), "could not re-pin the rotated certificate")
+							return nil, -1
+						}
+						log.Info().Msgf("certificate rotated, sshfp verified: re-pinned %s in %s", hostKey, knownHostsPath)
 					} else {
+						// a self-signed rotation without the DNS signal has no
+						// proof at all: the canon keeps it a refusal
 						logCertificateMismatch(peerCerts[0])
 						qClient.CloseWithError(quic.ApplicationErrorCode(0), "server certificate does not match the pinned one")
 						return nil, -1

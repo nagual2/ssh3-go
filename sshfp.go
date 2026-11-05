@@ -653,6 +653,17 @@ type SSHFPResult struct {
 	Err error
 }
 
+// VouchesRotation tells whether the verdict is strong enough to re-pin a
+// rotated self-signed certificate (CERT-VERIFICATION-CANON.md 2.4). Under
+// the selfsigned.ssh3 anchor the hostname is not proven against the target,
+// so a published record matching the new key is the only proof left that the
+// rotation is legitimate. The soft verdicts (not checked, no records,
+// lookup failed) say nothing about the key and never vouch: a self-signed
+// rotation without the DNS signal stays a refusal.
+func (r SSHFPResult) VouchesRotation() bool {
+	return r.Status == SSHFPStatusVerified
+}
+
 // CheckSSHFP fetches the SSHFP records of a host key and looks for one matching
 // the presented certificate.
 //
