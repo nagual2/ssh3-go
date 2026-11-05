@@ -77,13 +77,9 @@ func sendWindowChangeRequest(channel ssh3.Channel, tty *os.File) error {
 }
 
 func forwardAgent(parent context.Context, channel ssh3.Channel) error {
-	sockPath := os.Getenv("SSH_AUTH_SOCK")
-	if sockPath == "" {
-		return fmt.Errorf("no auth socket in SSH_AUTH_SOCK env var")
-	}
-	c, err := net.Dial("unix", sockPath)
+	c, err := AgentDial()
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot connect to the local SSH agent: %w", err)
 	}
 	defer c.Close()
 	ctx, cancel := context.WithCancelCause(parent)

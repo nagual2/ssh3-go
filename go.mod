@@ -2,6 +2,7 @@
 module github.com/francoismichel/ssh3
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/caddyserver/certmagic v0.20.0
 	github.com/coreos/go-oidc/v3 v3.7.0
 	github.com/creack/pty v1.1.18

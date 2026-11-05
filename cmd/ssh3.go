@@ -570,13 +570,14 @@ func getConnectionMaterialFromURL(hostUrl *url.URL, sshConfig *matchcfg.Resolver
 	}
 
 	var agentClient agent.ExtendedAgent
-	socketPath := os.Getenv("SSH_AUTH_SOCK")
-	if socketPath != "" {
-		conn, err := net.Dial("unix", socketPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to open SSH_AUTH_SOCK: %s", err)
-		}
+	conn, err := client.AgentDial()
+	switch {
+	case err == nil:
 		agentClient = agent.NewClient(conn)
+	case errors.Is(err, client.ErrNoAgentSocket):
+		// No agent endpoint configured: go on without agent-based auth.
+	default:
+		return nil, nil, fmt.Errorf("failed to open SSH_AUTH_SOCK: %w", err)
 	}
 
 	var authMethods []interface{}
