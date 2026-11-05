@@ -1784,6 +1784,13 @@ func ClientMain() int {
 			if !strings.HasPrefix(hopUrl, "https://") {
 				hopUrl = fmt.Sprintf("https://%s", hopUrl)
 			}
+			// the hop path rides the ssh3-c canon: a hop spec without a
+			// path dials /ssh3-term (the CONNECT route of the reference
+			// servers; the bare "/" drew a 400 from the strict C server,
+			// the fork's own servers tolerated it)
+			if !strings.Contains(strings.SplitN(hopUrl, "/", 4)[3], "/") {
+				hopUrl += "/ssh3-term"
+			}
 			proxyParsedUrl, err := url.Parse(hopUrl)
 			if err != nil {
 				log.Error().Msgf("Could not parse proxy host URL %s: %s", hopUrl, err)
