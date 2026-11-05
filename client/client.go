@@ -356,7 +356,11 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 		}
 	}
 
-	qconn.HandshakeComplete()
+	// the wait is real: a bare call discards the channel — the resumed
+	// (0-RTT) conn returns from DialEarly before the handshake, and the
+	// ConnectionState() snapshot read before the wait rode version 0
+	// (the exporter refused, the live C-server leg caught it)
+	<-qconn.HandshakeComplete()
 	log.Debug().Msgf("QUIC handshake complete")
 	if qconn.ConnectionState().Used0RTT {
 		log.Debug().Msgf("SSH3-SESSION-REUSED 1 (the 0-RTT flight rode the resumed ticket)")

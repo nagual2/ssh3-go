@@ -18,6 +18,7 @@ int get_errno() { return errno; }
 */
 import "C"
 import (
+	"crypto/subtle"
 	"fmt"
 	"os"
 	"syscall"
@@ -65,6 +66,28 @@ func Getspnam(name string) (*ShadowEntry, error) {
 	return &s, nil
 }
 
+// maxCryptPassword is the password boundary of the crypt contract: a
+// password above it never reaches the crypt. The SSHole shape (the
+// OpenSSH 10.6p2 hardening alignment) rides the long-key behaviors of
+// the musl crypt — no honest credential rides this far.
+const maxCryptPassword = 256
+
+// hashUsable refuses the non-password records of the shadow table
+// before any crypt call: the empty field of a passwordless account
+// (the SSHole pre-condition on the musl systems without PAM), the "x"
+// of a hash living in a shadow file that was not fetched, the "*" of
+// the disabled login and the "!" prefix of the locked one ("!!" rides
+// the prefix).
+func hashUsable(hash string) bool {
+	if hash == "" || hash[0] == '*' || hash[0] == '!' {
+		return false
+	}
+	if hash == "x" {
+		return false
+	}
+	return true
+}
+
 /*
  * Wrapper around libc's crypt function
  * Similarly to the original function, the setting string
@@ -72,16 +95,36 @@ func Getspnam(name string) (*ShadowEntry, error) {
  * look at the three first components.
  */
 func Crypt(clearPassword, setting string) (string, error) {
+	// the non-password records and the over-boundary passwords refuse
+	// before the libc call: the musl crypt answers the unusable shapes
+	// in its own ways (the empty setting is the SSHole primitive), the
+	// gate keeps every one of them outside
+	if !hashUsable(setting) {
+		return "", fmt.Errorf("the stored hash does not encode a password: the account is passwordless or locked")
+	}
+
+	if len(clearPassword) == 0 || len(clearPassword) > maxCryptPassword {
+		return "", fmt.Errorf("the password length rides outside the crypt contract")
+	}
+
 	cPassword := C.CString(clearPassword)
 	defer C.free(unsafe.Pointer(cPassword))
 
-	cSetting := C.CString(string(setting))
+	cSetting := C.CString(setting)
 	defer C.free(unsafe.Pointer(cSetting))
 
 	ccrypt_ret := C.crypt(cPassword, cSetting)
 
+	// the musl crypt returns NULL for the settings it does not
+	// implement (glibc answers the "*0" string instead) — GoString(nil)
+	// would ride the empty string and the compare below would
+	// authenticate an empty password against it
+	if ccrypt_ret == nil {
+		return "", fmt.Errorf("crypt refused the setting (unsupported scheme?)")
+	}
+
 	hashedPassword := C.GoString(ccrypt_ret)
-	if hashedPassword[0] == '*' {
+	if len(hashedPassword) == 0 || hashedPassword[0] == '*' {
 		return "", fmt.Errorf("bad password hashing")
 	}
 	return hashedPassword, nil
@@ -107,8 +150,13 @@ func GetGid() int32 {
  * Compares the provided password with the one stored in the shadow passwords table (generally /etc/shadow)
  */
 func ComparePasswordWithHashedPassword(candidatePassword string, hashedPassword string) (bool, error) {
-	candidateHashedPassword, err := Crypt(candidatePassword, string(hashedPassword))
-	return candidateHashedPassword == string(hashedPassword), err
+	candidateHashedPassword, err := Crypt(candidatePassword, hashedPassword)
+	if err != nil {
+		return false, err
+	}
+
+	// the digest is a secret: the constant-time compare
+	return subtle.ConstantTimeCompare([]byte(candidateHashedPassword), []byte(hashedPassword)) == 1, nil
 }
 
 /*

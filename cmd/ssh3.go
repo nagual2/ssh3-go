@@ -1860,7 +1860,7 @@ func ClientMain() int {
 			// path dials /ssh3-term (the CONNECT route of the reference
 			// servers; the bare "/" drew a 400 from the strict C server,
 			// the fork's own servers tolerated it)
-			if !strings.Contains(strings.SplitN(hopUrl, "/", 4)[3], "/") {
+			if !strings.Contains(strings.TrimPrefix(hopUrl, "https://"), "/") {
 				hopUrl += "/ssh3-term"
 			}
 			proxyParsedUrl, err := url.Parse(hopUrl)
