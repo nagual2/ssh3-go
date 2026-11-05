@@ -5,7 +5,10 @@ package cmd
 // malformed option must be rejected before a connection is attempted.
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/francoismichel/ssh3/util"
 )
@@ -196,5 +199,121 @@ func TestResolveServerCertKeyAliases(t *testing.T) {
 	}
 	if _, _, err := resolveServerCertKeyAliases(true, true, false, true, "./cert.pem", "./priv.key", "", "./h.key"); err == nil {
 		t.Fatal("aliases accepted -key together with -h")
+	}
+}
+
+func TestParseConnectTimeoutKeywordAccepts(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "default scale", value: "30", want: 30},
+		{name: "deadline removed", value: "0", want: 0},
+		{name: "surrounding blanks", value: " 60 ", want: 60},
+		{name: "the day cap", value: "86400", want: 86400},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseConnectTimeoutKeyword(tt.value)
+			if err != nil {
+				t.Fatalf("parseConnectTimeoutKeyword(%q) returned error: %s", tt.value, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseConnectTimeoutKeyword(%q) = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseConnectTimeoutKeywordRejects(t *testing.T) {
+	specs := []string{
+		"",       // empty
+		"abc",    // not a number
+		"1.5",    // fractional seconds
+		"30s",    // a suffixed duration (the keyword takes bare seconds)
+		"-1",     // negative
+		"86401",  // one second past the cap
+		"999999", // far past the cap
+	}
+	for _, spec := range specs {
+		_, err := parseConnectTimeoutKeyword(spec)
+		if err == nil {
+			t.Fatalf("parseConnectTimeoutKeyword(%q) accepted an invalid value", spec)
+		}
+		// the refusal must name the keyword, like every other -o rejection
+		if !strings.Contains(err.Error(), "ConnectTimeout") {
+			t.Fatalf("parseConnectTimeoutKeyword(%q) error does not name the keyword: %s", spec, err)
+		}
+	}
+}
+
+func TestResolveConnectTimeoutPrecedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		optionSet   bool
+		optionValue int
+		configValue string
+		want        int
+	}{
+		{name: "the 30 s default when nothing is set", optionSet: false, optionValue: 0, configValue: "", want: 30},
+		{name: "-o wins over the config keyword", optionSet: true, optionValue: 5, configValue: "60", want: 5},
+		{name: "-o 0 removes the deadline despite the config", optionSet: true, optionValue: 0, configValue: "60", want: 0},
+		{name: "the config keyword fills what -o leaves empty", optionSet: false, optionValue: 0, configValue: "45", want: 45},
+		{name: "the config keyword can remove the deadline too", optionSet: false, optionValue: 0, configValue: "0", want: 0},
+		{name: "the config value may carry blanks", optionSet: false, optionValue: 0, configValue: " 45 ", want: 45},
+		{name: "a blank config value falls back to the default", optionSet: false, optionValue: 0, configValue: "   ", want: 30},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveConnectTimeout(tt.optionSet, tt.optionValue, tt.configValue)
+			if err != nil {
+				t.Fatalf("resolveConnectTimeout(%v, %d, %q) returned error: %s", tt.optionSet, tt.optionValue, tt.configValue, err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveConnectTimeout(%v, %d, %q) = %d, want %d", tt.optionSet, tt.optionValue, tt.configValue, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveConnectTimeoutRejectsBadConfig(t *testing.T) {
+	// a malformed ~/.ssh/config value aborts like a malformed -o value
+	_, err := resolveConnectTimeout(false, 0, "later")
+	if err == nil {
+		t.Fatal("resolveConnectTimeout accepted a non-numeric config value")
+	}
+	if !strings.Contains(err.Error(), "ConnectTimeout") {
+		t.Fatalf("the error does not name the keyword: %s", err)
+	}
+	// an explicit -o 0 means "no deadline", never a config fallback
+	got, err := resolveConnectTimeout(true, 0, "")
+	if err != nil || got != 0 {
+		t.Fatalf("resolveConnectTimeout(true, 0, %q) = %d, %v; want 0, nil", "", got, err)
+	}
+}
+
+func TestReportSetupTimeoutVerdict(t *testing.T) {
+	live, liveCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer liveCancel()
+	if reportSetupTimeout(live, 30) {
+		t.Fatal("reportSetupTimeout fired on a live deadline")
+	}
+	expired, expiredCancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer expiredCancel()
+	<-expired.Done()
+	if !reportSetupTimeout(expired, 30) {
+		t.Fatal("reportSetupTimeout missed an expired deadline")
+	}
+	// seconds == 0 means the deadline was never armed: no verdict can fire
+	if reportSetupTimeout(expired, 0) {
+		t.Fatal("reportSetupTimeout fired for an unarmed deadline")
+	}
+	// a cancellation is not the ConnectTimeout verdict
+	canceled, canceledCancel := context.WithCancel(context.Background())
+	canceledCancel()
+	<-canceled.Done()
+	if reportSetupTimeout(canceled, 30) {
+		t.Fatal("reportSetupTimeout fired on a plain cancellation")
 	}
 }
