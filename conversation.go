@@ -99,7 +99,23 @@ func NewClientConversation(maxPacketsize uint64, defaultDatagramsQueueSize uint6
 	return conv, nil
 }
 
-func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *quic.Conn, transport *http3.Transport, supportedVersions []Version) error {
+// EstablishClientConversation exchanges the version strings and turns
+// the connection into an established client conversation.  The
+// compressAnnounce (the resolved value of ssh3.ResolveCompressAnnounce,
+// the client's -C) shapes the "compress=" field of every version
+// string this conversation sends: nil keeps the build's codec list.
+func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *quic.Conn, transport *http3.Transport, supportedVersions []Version, compressAnnounce *string) error {
+
+	// the -C of the CLI rides local copies of the versions: the
+	// package list keeps its own announce, and the retry below sends
+	// the stamped ones too
+	if compressAnnounce != nil {
+		stamped := make([]Version, len(supportedVersions))
+		for i, version := range supportedVersions {
+			stamped[i] = version.WithCompressAnnounce(*compressAnnounce)
+		}
+		supportedVersions = stamped
+	}
 
 	// quic-go v0.63 no longer spawns accept loops nor offers a StreamHijacker
 	// for raw connections: the application drives them itself, and it must do so

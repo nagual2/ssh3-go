@@ -674,6 +674,96 @@ func (v *FlagValue) IsBoolFlag() bool {
 	return v.CLIOptionParser.IsBoolFlag()
 }
 
+// normalizeCompressFlagArgs rewrites the -C forms of the ssh3-c canon
+// into the "=" form the Go flag package parses, walking the option
+// region the way the parse will ride it: a value flag eats the next
+// word, the first operand ends the walk, so the command words keep
+// their bytes.
+//
+//   - the attached value ("-Cnone", "-Czstd") is the undefined flag
+//     "Cnone" for the flag package, so the value moves to "-C=none";
+//   - the separated value ("-C zstd") rides the parse as it is;
+//   - the bare "-C" carries no value (the auto of the canon): a word
+//     that names a codec rides with it ("-C none" -> "-C=none", the
+//     word leaves the command line), a word that carries the host
+//     shape (the user@, the port colon, the path slash or the dot of
+//     a fqdn) is the destination and the flag rides the auto, and
+//     anything else is a refusal.
+func normalizeCompressFlagArgs(args []string, lookup func(name string) (takesValue bool, defined bool)) ([]string, error) {
+	normalized := append([]string(nil), args...)
+	for i := 1; i < len(normalized); i++ {
+		arg := normalized[i]
+		if arg == "-" || arg == "--" || !strings.HasPrefix(arg, "-") {
+			// the first operand (or the end-of-flags marker) ends the
+			// option region (the ssh shape: the command words keep
+			// their dashes)
+			break
+		}
+		name := arg[1:]
+		if strings.HasPrefix(name, "-") {
+			name = name[1:] // the long form rides the same lookup
+		}
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			// the value rides inline, the parse handles the token
+			continue
+		}
+		if len(name) > 1 && name[0] == 'C' {
+			if _, defined := lookup(name); !defined {
+				// the attached value of -C: the Go flag package would
+				// refuse the token as the undefined flag "Cnone"
+				normalized[i] = "-C=" + name[1:]
+			}
+			continue
+		}
+		if name == "C" {
+			takesValue, defined := lookup("C")
+			if !defined || !takesValue {
+				break
+			}
+			nextIndex := i + 1
+			if nextIndex >= len(normalized) || strings.HasPrefix(normalized[nextIndex], "-") {
+				// no word of its own: the auto of the canon
+				normalized[i] = "-C="
+				continue
+			}
+			next := normalized[nextIndex]
+			_, resolveErr := ssh3.ResolveCompressAnnounce(next)
+			if resolveErr == nil {
+				// the word names the codec: it rides the flag and
+				// leaves the command line, otherwise it would be the
+				// destination of the run
+				normalized[i] = "-C=" + next
+				normalized = append(normalized[:nextIndex], normalized[nextIndex+1:]...)
+				continue
+			}
+			if compressWordIsHostShape(next) {
+				// the destination of the run: the flag rides the auto
+				normalized[i] = "-C="
+				continue
+			}
+			return nil, resolveErr
+		}
+		takesValue, defined := lookup(name)
+		if !defined {
+			// the parse refuses the token, the region ends here
+			break
+		}
+		if takesValue && i+1 < len(normalized) {
+			// the value of another flag rides the next word: the walk
+			// skips it, so a -C form inside a value keeps its bytes
+			i++
+		}
+	}
+	return normalized, nil
+}
+
+// compressWordIsHostShape tells whether the word after a bare -C
+// carries the destination shape (the ssh3-c escape): the user@, the
+// port colon, the path slash or the dot of a fqdn.
+func compressWordIsHostShape(word string) bool {
+	return strings.ContainsAny(word, "@:/.")
+}
+
 func ClientMain() int {
 	// the plugin registration (init-time) logs run before ConfigureLogger:
 	// keep the default startup quiet at the ssh(1) level (warnings and errors
@@ -706,6 +796,7 @@ func ClientMain() int {
 	flag.BoolVar(&forwardAgentVar, "A", false, "enable agent forwarding (ssh2 -A; same as -forward-agent)")
 	streamRxMiB := flag.Int("stream-rx-mb", 8, "initial per-stream flow control receive window in MiB")
 	connRxMiB := flag.Int("conn-rx-mb", 16, "initial connection-level flow control receive window in MiB")
+	compressFlag := flag.String("C", "", "the compression of the channel body: \"none\" disables it, a codec name (zstd, deflate, lz4) pins it, an empty value rides the default (ssh3-c -C; the forms -Cnone, -Czstd and -C none ride too)")
 	controlOp := flag.String("O", "", "control operation on an existing control master: check, stop or exit")
 	controlMaster := flag.String("control-master", "no", "share one connection across invocations: no, yes or auto (reuse a running master, else start one in background; not compatible with -J; unsupported on windows)")
 	controlPathFlag := flag.String("control-path", "", "control master unix socket path (default ~/.ssh3/cm-<user>@<host>:<port>)")
@@ -755,6 +846,23 @@ func ClientMain() int {
 		flagValues = append(flagValues, flagValue)
 		flag.Var(flagValue, parser.FlagName(), parser.Usage())
 	}
+
+	// the -C forms of the ssh3-c canon normalize before the parse: the
+	// attached "-Cname" is the undefined flag "Cnone" for the Go flag
+	// package, and the bare "-C" needs the value-word resolution
+	normalizedArgs, err := normalizeCompressFlagArgs(os.Args, func(name string) (takesValue bool, defined bool) {
+		f := flag.Lookup(name)
+		if f == nil {
+			return false, false
+		}
+		_, isBool := f.Value.(interface{ IsBoolFlag() bool })
+		return !isBool, true
+	})
+	if err != nil {
+		log.Error().Msgf("%s", err)
+		return -1
+	}
+	os.Args = normalizedArgs
 
 	flag.Parse()
 	args := flag.Args()
@@ -1121,6 +1229,15 @@ func ClientMain() int {
 	}
 
 	log.Debug().Msgf("version %s", ssh3.GetCurrentSoftwareVersion())
+
+	// the -C value resolves into the compress= value of the version
+	// string: an unknown name refuses here (the canon refuses at the
+	// parse, this is the same refusal one layer later)
+	compressAnnounce, err := ssh3.ResolveCompressAnnounce(*compressFlag)
+	if err != nil {
+		log.Error().Msgf("could not resolve -C: %s", err)
+		return -1
+	}
 
 	if *noPKCE {
 		log.Warn().Msgf("Disabling PKCE is considered insecure to machine-in-the-middle attacks. Consider enabling PKCE by default!")
@@ -1574,7 +1691,7 @@ func ClientMain() int {
 				return status
 			}
 			transport := &http3.Transport{}
-			c, err := client.Dial(setupCtx, options, qconn, transport, nil, client.WithMultiplexed())
+			c, err := client.Dial(setupCtx, options, qconn, transport, nil, client.WithMultiplexed(), client.WithCompressAnnounce(compressAnnounce))
 			if err != nil {
 				if !reportSetupTimeout(setupCtx, connectTimeout) {
 					log.Error().Msgf("the control master could not establish its connection: %s", err)
@@ -1672,7 +1789,7 @@ func ClientMain() int {
 			// datagrams on the same connection
 			transport := &http3.Transport{}
 
-			proxyClient, err := client.Dial(setupCtx, proxyOptions, qconn, transport, proxyAgentClient)
+			proxyClient, err := client.Dial(setupCtx, proxyOptions, qconn, transport, proxyAgentClient, client.WithCompressAnnounce(compressAnnounce))
 			if err != nil {
 				if !reportSetupTimeout(setupCtx, connectTimeout) {
 					log.Error().Msgf("could not establish SSH3 proxy conversation: %s", err)
@@ -1744,7 +1861,7 @@ func ClientMain() int {
 	// the same connection
 	transport := &http3.Transport{}
 
-	c, err := client.Dial(setupCtx, options, qconn, transport, agentClient)
+	c, err := client.Dial(setupCtx, options, qconn, transport, agentClient, client.WithCompressAnnounce(compressAnnounce))
 	if err != nil {
 		if !reportSetupTimeout(setupCtx, connectTimeout) {
 			log.Error().Msgf("could not dial %s: %s", options.CanonicalHostFormat(), err)

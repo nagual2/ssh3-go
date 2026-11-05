@@ -255,6 +255,13 @@ type DialOption func(*dialOptions)
 
 type dialOptions struct {
 	multiplexed bool
+
+	// compressAnnounce is the literal "compress=" value of the
+	// client's version string (the -C of the CLI, the resolved value
+	// of ssh3.ResolveCompressAnnounce): nil keeps the build's codec
+	// list, the empty value keeps the field out (the compression
+	// off), a codec name pins the list to it
+	compressAnnounce *string
 }
 
 // WithMultiplexed marks the conversation as shared by a control master:
@@ -262,6 +269,13 @@ type dialOptions struct {
 // the master disconnects (stage 3.5).
 func WithMultiplexed() DialOption {
 	return func(o *dialOptions) { o.multiplexed = true }
+}
+
+// WithCompressAnnounce carries the -C of the CLI into the version
+// exchange: announce becomes the "compress=" field of the version
+// string the client sends, verbatim.
+func WithCompressAnnounce(announce string) DialOption {
+	return func(o *dialOptions) { o.compressAnnounce = &announce }
 }
 
 func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
@@ -444,7 +458,7 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	}
 
 	log.Debug().Msgf("establish conversation with the server")
-	err = conv.EstablishClientConversation(req, qconn, transport, ssh3.AVAILABLE_CLIENT_VERSIONS)
+	err = conv.EstablishClientConversation(req, qconn, transport, ssh3.AVAILABLE_CLIENT_VERSIONS, dialOpts.compressAnnounce)
 	if errors.Is(err, util.Unauthorized{}) {
 		log.Error().Msgf("Access denied from the server: unauthorized")
 		return nil, err

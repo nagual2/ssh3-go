@@ -211,6 +211,15 @@ type Version struct {
 	// the channel body, PLAN.md 9 B8); zero when the peer announced
 	// nothing.
 	compressAlgorithms uint64
+
+	// compressAnnounce is the literal value of the "compress=" field
+	// this endpoint puts in its version string instead of the build's
+	// codec list: the client's -C (the announce-side control of the
+	// compression, the ssh3-c canon).  nil rides the build default
+	// (the parsed peer versions and the server never set it); the
+	// empty value keeps the field out of the version string (the
+	// explicit off); a codec name pins the list to it.
+	compressAnnounce *string
 }
 
 // GetCompressAlgorithms returns the capability mask of the peer: the
@@ -240,11 +249,50 @@ func (v Version) GetVersionString() string {
 	// the compression capability of the channel body (PLAN.md 9, B8):
 	// the algorithms this build can decode, announced in the same
 	// version string - the peer parses it the same way, and the field
-	// is optional (an old peer ignores it)
-	if available := compress.Available(); available != "" {
+	// is optional (an old peer ignores it).  The client's -C shapes
+	// the field: the off keeps it out, a codec name pins the list
+	// (the peer derives its codec from the mask it parses here).
+	available := compress.Available()
+	if v.compressAnnounce != nil {
+		available = *v.compressAnnounce
+	}
+	if available != "" {
 		ret = fmt.Sprintf("%s compress=%s", ret, available)
 	}
 	return ret
+}
+
+// WithCompressAnnounce returns a copy of the version whose "compress="
+// field carries announce verbatim: an empty announce omits the field
+// (the compression off), a codec name pins the list to it.  The
+// receiver keeps its own announce, so the package version list never
+// mutates.
+func (v Version) WithCompressAnnounce(announce string) Version {
+	v.compressAnnounce = &announce
+	return v
+}
+
+// ResolveCompressAnnounce resolves the value of the client's -C flag
+// into the "compress=" value of its version string (the compression
+// control of the ssh3-c canon): the empty value rides the build's
+// codecs (the auto), "none" is the explicit off (the field stays out
+// of the version string), a codec name pins the list to it.  The
+// names are case-insensitive, the canonical ones are lowercase; an
+// unknown name is a refusal naming the known ones.
+func ResolveCompressAnnounce(value string) (string, error) {
+	name := strings.ToLower(value)
+	if name == "" {
+		return compress.Available(), nil
+	}
+	if name == "none" {
+		return "", nil
+	}
+	for _, known := range compress.Names() {
+		if known == name {
+			return known, nil
+		}
+	}
+	return "", fmt.Errorf("unknown compression codec: %s (the known ones: %s)", value, strings.Join(compress.Names(), ", "))
 }
 
 func NewVersion(protocolName string, protocolVersion ProtocolVersion, softwareVersion SoftwareVersion) Version {
