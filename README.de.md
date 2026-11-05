@@ -492,7 +492,7 @@ Installationen und Skripte funktionieren weiter.
 | `-p PORT` | Remote-Port (auch im Übertragungsmodus) | `-P PORT` (nur Übertragungsmodus) |
 | `-q` | still: Diagnosen unterdrückt, Fehler bleiben | — |
 | `-4` / `-6` | Adressfamilie erzwingen | — |
-| `-f` | nach dem Start in den Hintergrund (ssh2 `-f`): die Sitzung löst sich vom Terminal und läuft weiter; nur nicht-interaktive Authentifizierung (Schlüssel/Agent), ein ungepinnter Host unter der Ask-Politik wird vorab abgelehnt; kombinierbar mit Befehl, `-N` oder Weiterleitungen (`-L/-D/-R`); auf Windows nicht verfügbar (läuft mit Warnung im Vordergrund) | — |
+| `-f` | nach dem Start in den Hintergrund (ssh2 `-f`): die Sitzung löst sich vom Terminal und läuft weiter; nur nicht-interaktive Authentifizierung (Schlüssel/Agent), ein ungepinnter Host unter der Ask-Politik wird vorab abgelehnt; kombinierbar mit Befehl, `-N` oder Weiterleitungen (`-L/-D/-R`); mechanisch startet der Elternprozess ein abgelöstes Kind, das die Verbindung selbst erneut aufbaut (die kanonische Go-Form — die Go-Laufzeit kann eine etablierte Verbindung nicht forken), ein zweiter Handshake in den Server-Logs ist also normal; auf Windows nicht verfügbar (läuft mit Warnung im Vordergrund) | — |
 | `-transfer SRC DST` | Dateiübertragungsmodus | die Fork-eigene Übertragungsform `-f` ist eingestellt (das Flag bedeutet jetzt das ssh2-Backgrounding) |
 
 Server (sshd(8)-Kanon): `-h SCHLÜSSEL` = Host-Key (Alias von `-key`),

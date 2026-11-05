@@ -477,7 +477,7 @@ working.
 | `-p PORT` | remote port (also in transfer mode) | `-P PORT` (transfer mode only) |
 | `-q` | quiet: suppress diagnostics, keep errors | — |
 | `-4` / `-6` | force the address family | — |
-| `-f` | go to background after startup (ssh2 `-f`): the session detaches from the terminal and keeps running; non-interactive authentication only (key/agent), and an unpinned host under the default ask policy is refused up front; combine with a command, `-N` or forwards (`-L/-D/-R`); unavailable on Windows (runs in the foreground with a warning) | — |
+| `-f` | go to background after startup (ssh2 `-f`): the session detaches from the terminal and keeps running; non-interactive authentication only (key/agent), and an unpinned host under the default ask policy is refused up front; combine with a command, `-N` or forwards (`-L/-D/-R`); mechanically the parent re-execs a detached child that re-raises the whole connection itself (the canonical Go form — the Go runtime cannot fork an established connection), so a second handshake in the server logs is normal; unavailable on Windows (runs in the foreground with a warning) | — |
 | `-transfer SRC DST` | file transfer mode | the fork's own `-f` transfer form is retired (the flag means the ssh2 background now) |
 
 Server (sshd(8) canon): `-h KEY` = host key (alias of `-key`), `-c CERT` =

@@ -30,7 +30,7 @@ type backgroundOptions struct {
 	HostPinned    bool // the target is in known_hosts
 	HasCommand    bool // a remote command was given
 	NoSession     bool // -N
-	HasForwards   bool // -L/-D/-R/-transfer: anything long-lived
+	HasForwards   bool // -L/-D/-R/-transfer/--sftp: anything long-lived
 }
 
 // validateBackgroundMode returns the reason the detached child cannot come

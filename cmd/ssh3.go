@@ -1737,7 +1737,7 @@ func ClientMain() int {
 				HostPinned:    pinned,
 				HasCommand:    len(command) > 0,
 				NoSession:     *noSession,
-				HasForwards:   len(localForwardsFlag) > 0 || len(dynamicForwardsFlag) > 0 || len(reverseForwardsFlag) > 0 || *transferMode,
+				HasForwards:   len(localForwardsFlag) > 0 || len(dynamicForwardsFlag) > 0 || len(reverseForwardsFlag) > 0 || *transferMode || *sftpMode,
 			})
 			if bgErr != nil {
 				log.Error().Msgf("%s", bgErr)
