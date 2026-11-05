@@ -1907,6 +1907,30 @@ func ClientMain() int {
 				return -1
 			}
 
+			/*
+			 * the datagram budget probe (the canon dgram_need): the
+			 * tunnel channel of this hop carries the next level's
+			 * packets of up to its packet size plus the SSH3 framing,
+			 * and the peer's max_datagram_frame_size must cover the
+			 * whole datagram. quic-go refuses the oversized send
+			 * locally — the probe turns that into the clean refusal
+			 * before the deeper level dials into a dead tunnel (the
+			 * ssh3-c servers ship -d 1200, the canonical remediation
+			 * rides the message)
+			 */
+
+			nextLevelSize, err := tunneledPacketSize(outerSize, hopIndex+1)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+
+			if err := qconn.SendDatagram(make([]byte, nextLevelSize+tunnelDatagramOverhead)); err != nil {
+				log.Error().Msgf("the proxy hop %d datagram budget does not cover the chain: %s", hopIndex+1, err)
+				log.Error().Msgf("run the hop server with -d >= %d (the max_datagram_frame_size transport parameter)", nextLevelSize+tunnelDatagramOverhead)
+				return -1
+			}
+
 			// each hop tunnels UDP towards the next one; the last hop tunnels
 			// towards the final destination
 			udpTarget := options.URLHostnamePort()
