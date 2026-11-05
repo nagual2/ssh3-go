@@ -249,19 +249,19 @@ func TestLocalMaskFromAnnounce(t *testing.T) {
 		t.Errorf("nil announce: mask = %#x, want the full build list", full)
 	}
 	empty := ""
-	if LocalMaskFromAnnounce(&empty) != 0 {
+	if EffectiveLocalMask(LocalMaskFromAnnounce(&empty)) != 0 {
 		t.Error("the empty announce must ride the off")
 	}
 	none := "None"
-	if LocalMaskFromAnnounce(&none) != 0 {
+	if EffectiveLocalMask(LocalMaskFromAnnounce(&none)) != 0 {
 		t.Error("none (any case) must ride the off")
 	}
 	zstd := "zstd"
-	if LocalMaskFromAnnounce(&zstd) != MaskZstd {
+	if EffectiveLocalMask(LocalMaskFromAnnounce(&zstd)) != MaskZstd {
 		t.Errorf("the pinned codec: mask = %#x, want MaskZstd", LocalMaskFromAnnounce(&zstd))
 	}
 	unknown := "brotli"
-	if LocalMaskFromAnnounce(&unknown) != 0 {
+	if EffectiveLocalMask(LocalMaskFromAnnounce(&unknown)) != 0 {
 		t.Error("an unknown codec name cannot widen the mask")
 	}
 }

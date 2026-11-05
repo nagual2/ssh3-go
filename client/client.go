@@ -322,12 +322,45 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	// directly on the QUIC connection dialed above, so there is no need for the
 	// one-connection hack anymore
 
-	// Do 0RTT GET requests here if needed
-	// Currently, we don't need it but we could use it to retrieve
-	// config or version info from the server
-	// We could also allow user-defined safe/idempotent commands to run with 0-RTT
+	// The 0-RTT stage 2 (the early CONNECT, RFC 8470): when the ticket of
+	// this server rides the cache and its last session held the
+	// 425-retry contract (an ssh3-c server), the CONNECT leaves before
+	// the handshake completes — the flight is protected by the ticket
+	// PSK, and the auth stays out of the replay window (the bare CONNECT
+	// carries no credentials). The retry contract reroutes the flight on
+	// the server; after the handshake the fresh-CONNECT path (the
+	// conversation established below) reuses the preauth record — the
+	// one-shot retry shape of the ssh3-c canon. A rejected 0-RTT (the
+	// server lost the session) drops the early stream silently: the
+	// conversation below carries the full CONNECT.
+	rawConn := transport.NewRawClientConn(qconn)
+	if GetTicketCache().RetryContract() {
+		earlyReq, err := http.NewRequest("CONNECT", requestUrl, nil)
+		if err == nil {
+			earlyReq.Proto = "ssh3"
+			earlyReq.Header.Set("User-Agent", ssh3.ThisVersion().GetVersionString())
+			if rs, err := rawConn.ClientConn.OpenRequestStream(ctx); err == nil {
+				if err := rs.SendRequestHeader(earlyReq); err == nil {
+					log.Debug().Msgf("the early CONNECT rides the 0-RTT window")
+					go func() {
+						rsp, err := rs.ReadResponse()
+						if err != nil {
+							// the 0-RTT rejection of a dead ticket rides here too
+							log.Debug().Msgf("the early CONNECT drew no response: %s", err)
+							return
+						}
+						log.Debug().Msgf("the early CONNECT got %s (the retry rides the conversation)", rsp.Status)
+					}()
+				}
+			}
+		}
+	}
+
 	qconn.HandshakeComplete()
 	log.Debug().Msgf("QUIC handshake complete")
+	if qconn.ConnectionState().Used0RTT {
+		log.Debug().Msgf("SSH3-SESSION-REUSED 1 (the 0-RTT flight rode the resumed ticket)")
+	}
 	// Now, we're 1-RTT, we can get the TLS exporter and create the conversation
 	tls := qconn.ConnectionState().TLS
 	conv, err := ssh3.NewClientConversation(30000, 10, &tls)
@@ -458,7 +491,19 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	}
 
 	log.Debug().Msgf("establish conversation with the server")
-	err = conv.EstablishClientConversation(req, qconn, transport, ssh3.AVAILABLE_CLIENT_VERSIONS, dialOpts.compressAnnounce)
+	err = conv.EstablishClientConversation(req, qconn, transport, ssh3.AVAILABLE_CLIENT_VERSIONS, dialOpts.compressAnnounce, rawConn)
+	if errors.Is(err, util.Unauthorized{}) {
+		log.Error().Msgf("Access denied from the server: unauthorized")
+		return nil, err
+	} else if err != nil {
+		log.Error().Msgf("Could not establish conversation: %+v", err)
+		return nil, err
+	}
+
+	// the server flag of the retry contract rides the Server header of
+	// the established session (the next dial of this process reads it
+	// back)
+	GetTicketCache().NoteServerFlag(conv.PeerVersion().GetVersionString())
 	if errors.Is(err, util.Unauthorized{}) {
 		log.Error().Msgf("Access denied from the server: unauthorized")
 		return nil, err

@@ -206,7 +206,18 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 		NextProtos:         []string{http3.NextProtoH3},
 		KeyLogWriter:       keylog,
 		ServerName:         options.Hostname(),
+
+		// the 0-RTT stage 1: the session tickets ride the in-process
+		// cache (the jump chains and the control master gain the
+		// resumption; the disk cache of the C canon cannot ride — the
+		// Go standard library exports no serialization of
+		// tls.ClientSessionState)
+		ClientSessionCache: client.GetTicketCache(),
 	}
+
+	// the cache routes the tls callbacks through the noted dial (the
+	// internal keys of crypto/tls ride their own shape)
+	client.GetTicketCache().NoteDial(options.Hostname(), uint16(options.Port()))
 
 	var qconf quic.Config
 

@@ -48,6 +48,7 @@ type Conversation struct {
 	context                   context.Context
 	cancelContext             context.CancelCauseFunc
 	conversationID            ConversationID // generated using TLS exporters
+	localCompressMask         uint64         // what this side encodes with (the -C control)
 	peerVersion               Version
 
 	channelsAcceptQueue *util.AcceptQueue[Channel]
@@ -61,7 +62,7 @@ type Conversation struct {
 // of the channel body, PLAN.md 9 B8).  A peer that announced nothing
 // gets the plain frames.
 func (c *Conversation) compressAlgorithm() uint64 {
-	return compress.Choose(c.peerVersion.GetCompressAlgorithms() & c.localCompressMask)
+	return compress.Choose(c.peerVersion.GetCompressAlgorithms() & compress.EffectiveLocalMask(c.localCompressMask))
 }
 
 func GenerateConversationID(tls *tls.ConnectionState) (convID ConversationID, err error) {
@@ -96,9 +97,9 @@ func NewClientConversation(maxPacketsize uint64, defaultDatagramsQueueSize uint6
 
 		// peerVersion set afterwards
 
-		// localCompressMask is what this side is willing to encode with: the
-		// full local list by default, the -C of the CLI narrows it (none = 0,
-		// the plain frames both ways)
+		// localCompressMask narrows what this side encodes with: 0 = not set
+		// (the full local list), the -C of the
+		// CLI sets it via compress.LocalMaskFromAnnounce (the off bit = plain both ways)
 		localCompressMask: compress.LocalMaskFromAnnounce(nil),
 	}
 	return conv, nil
@@ -109,7 +110,11 @@ func NewClientConversation(maxPacketsize uint64, defaultDatagramsQueueSize uint6
 // compressAnnounce (the resolved value of ssh3.ResolveCompressAnnounce,
 // the client's -C) shapes the "compress=" field of every version
 // string this conversation sends: nil keeps the build's codec list.
-func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *quic.Conn, transport *http3.Transport, supportedVersions []Version, compressAnnounce *string) error {
+// The raw conn rides from the caller when the 0-RTT stage created it
+// before the handshake (the early CONNECT shares the one raw conn —
+// a second one would open duplicate control/QPACK streams); nil keeps
+// the internal creation for the plain 1-RTT dial.
+func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *quic.Conn, transport *http3.Transport, supportedVersions []Version, compressAnnounce *string, rawConnIn *http3.RawClientConn) error {
 
 	// the -C of the CLI rides local copies of the versions: the
 	// package list keeps its own announce, and the retry below sends
@@ -131,7 +136,12 @@ func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *qui
 	// for raw connections: the application drives them itself, and it must do so
 	// before the request is sent so that the server's HTTP/3 control and QPACK
 	// unidirectional streams are consumed while the response headers are decoded.
-	rawConn := transport.NewRawClientConn(qconn)
+	// The 0-RTT stage rides the raw conn the caller created before the
+	// handshake (the early CONNECT); nil keeps the plain-dial creation.
+	rawConn := rawConnIn
+	if rawConn == nil {
+		rawConn = transport.NewRawClientConn(qconn)
+	}
 	connCtx := qconn.Context()
 	go func() {
 		defer util.PanicGuard("conversation.go:100")()
@@ -634,4 +644,10 @@ func (c *Conversation) getDatagramSenderForChannel(channelID util.ChannelID) fun
 
 func (c *Conversation) ConversationID() ConversationID {
 	return c.conversationID
+}
+
+// PeerVersion returns the version string the server announced in its
+// Server header (zero value before the conversation established).
+func (c *Conversation) PeerVersion() Version {
+	return c.peerVersion
 }

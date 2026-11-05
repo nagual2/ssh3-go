@@ -419,19 +419,34 @@ func decompressZstd(data []byte) ([]byte, error) {
 	return out, nil
 }
 
+// CompressOffBit marks an explicit local mask (the -C control rode);
+// a Conversation without the bit keeps the full local list.
+const CompressOffBit uint64 = 1 << 62
+
 // LocalMaskFromAnnounce maps the client's -C control onto the mask of
 // the codecs the client itself is willing to encode with: nil (the
 // auto) keeps the full local list, "none" is the explicit off (the
 // plain frames both ways, the ssh3-c canon of the -Cnone), a single
-// codec name pins the mask to it.  The gate rides the local encoder,
-// the peer-facing announce keeps its own shaping.
+// codec name pins the mask to it.  The Conversation stores 0 as "not
+// set" (the struct literal default), so every explicit value rides the
+// off bit and EffectiveLocalMask resolves it.
 func LocalMaskFromAnnounce(announce *string) uint64 {
 	if announce == nil {
 		return localMask()
 	}
 	value := strings.ToLower(strings.TrimSpace(*announce))
 	if value == "" || value == "none" {
-		return 0
+		return CompressOffBit
 	}
-	return ParseCapability(value)
+	return ParseCapability(value) | CompressOffBit
+}
+
+// EffectiveLocalMask resolves the stored mask: the zero value keeps
+// the full build list, the off bit without codec bits is the plain
+// both ways, the pinned codec rides its own bit.
+func EffectiveLocalMask(stored uint64) uint64 {
+	if stored == 0 {
+		return localMask()
+	}
+	return stored &^ CompressOffBit
 }
