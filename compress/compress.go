@@ -418,3 +418,20 @@ func decompressZstd(data []byte) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// LocalMaskFromAnnounce maps the client's -C control onto the mask of
+// the codecs the client itself is willing to encode with: nil (the
+// auto) keeps the full local list, "none" is the explicit off (the
+// plain frames both ways, the ssh3-c canon of the -Cnone), a single
+// codec name pins the mask to it.  The gate rides the local encoder,
+// the peer-facing announce keeps its own shaping.
+func LocalMaskFromAnnounce(announce *string) uint64 {
+	if announce == nil {
+		return localMask()
+	}
+	value := strings.ToLower(strings.TrimSpace(*announce))
+	if value == "" || value == "none" {
+		return 0
+	}
+	return ParseCapability(value)
+}

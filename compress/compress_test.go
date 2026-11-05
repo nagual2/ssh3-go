@@ -239,3 +239,29 @@ func TestDecompressRefusesAFrameWithoutItsSize(t *testing.T) {
 		t.Fatalf("the decoder refused a frame without its size with %v, want %v", err, ErrUnknownContentSize)
 	}
 }
+
+// TestLocalMaskFromAnnounce rides the client -C control onto the local
+// encoder: the auto keeps the full build list, none is the explicit off
+// (the plain frames both ways), a codec name pins the mask.
+func TestLocalMaskFromAnnounce(t *testing.T) {
+	full := LocalMaskFromAnnounce(nil)
+	if full != MaskDeflate|MaskLZ4|MaskZstd {
+		t.Errorf("nil announce: mask = %#x, want the full build list", full)
+	}
+	empty := ""
+	if LocalMaskFromAnnounce(&empty) != 0 {
+		t.Error("the empty announce must ride the off")
+	}
+	none := "None"
+	if LocalMaskFromAnnounce(&none) != 0 {
+		t.Error("none (any case) must ride the off")
+	}
+	zstd := "zstd"
+	if LocalMaskFromAnnounce(&zstd) != MaskZstd {
+		t.Errorf("the pinned codec: mask = %#x, want MaskZstd", LocalMaskFromAnnounce(&zstd))
+	}
+	unknown := "brotli"
+	if LocalMaskFromAnnounce(&unknown) != 0 {
+		t.Error("an unknown codec name cannot widen the mask")
+	}
+}

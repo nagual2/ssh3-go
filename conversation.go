@@ -61,7 +61,7 @@ type Conversation struct {
 // of the channel body, PLAN.md 9 B8).  A peer that announced nothing
 // gets the plain frames.
 func (c *Conversation) compressAlgorithm() uint64 {
-	return compress.Choose(c.peerVersion.GetCompressAlgorithms())
+	return compress.Choose(c.peerVersion.GetCompressAlgorithms() & c.localCompressMask)
 }
 
 func GenerateConversationID(tls *tls.ConnectionState) (convID ConversationID, err error) {
@@ -95,6 +95,11 @@ func NewClientConversation(maxPacketsize uint64, defaultDatagramsQueueSize uint6
 		conversationID:            convID,
 
 		// peerVersion set afterwards
+
+		// localCompressMask is what this side is willing to encode with: the
+		// full local list by default, the -C of the CLI narrows it (none = 0,
+		// the plain frames both ways)
+		localCompressMask: compress.LocalMaskFromAnnounce(nil),
 	}
 	return conv, nil
 }
@@ -115,6 +120,11 @@ func (c *Conversation) EstablishClientConversation(req *http.Request, qconn *qui
 			stamped[i] = version.WithCompressAnnounce(*compressAnnounce)
 		}
 		supportedVersions = stamped
+
+		// the local encoder obeys the same control: -Cnone keeps the plain
+		// frames both ways (the ssh3-c canon of the -Cnone), a pinned codec
+		// narrows the local mask to it
+		c.localCompressMask = compress.LocalMaskFromAnnounce(compressAnnounce)
 	}
 
 	// quic-go v0.63 no longer spawns accept loops nor offers a StreamHijacker
@@ -416,6 +426,10 @@ func NewServerConversation(ctx context.Context, controlStream *http3.Stream, qco
 		cancelContext:       backgroundCancelFunc,
 		conversationID:      convID,
 		peerVersion:         peerVersion,
+
+		// the server local willingness is the full build list (the -C control
+		// is client-side)
+		localCompressMask: compress.LocalMaskFromAnnounce(nil),
 	}
 	return conv, nil
 }
