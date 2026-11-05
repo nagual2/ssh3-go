@@ -157,6 +157,48 @@ func parsePortKeyword(value string) (uint16, error) {
 	return port, nil
 }
 
+// The setup deadline of the connection (the ssh2 ConnectTimeout keyword,
+// client-opt leg 11): QUIC rides UDP, and UDP has no "connection refused" —
+// an unreachable server would otherwise hang the client until the QUIC
+// handshake idle timeout (ssh2HandshakeTimeout, 120 s). ssh2 itself needs no
+// default (the kernel bounds a TCP connect), so the fork follows the ssh3-c
+// client and gives the connection setup a 30 s deadline by default; 0 is the
+// ssh2 "unset" (deadline removed) and a day is the accepted maximum, so a
+// typo (one extra digit) cannot park the client for weeks.
+const (
+	defaultConnectTimeoutSeconds = 30
+	maxConnectTimeoutSeconds     = 24 * 60 * 60
+)
+
+// parseConnectTimeoutKeyword validates the ConnectTimeout value: a number of
+// seconds in the 0..86400 range, 0 meaning "no setup deadline". The -o
+// keyword and the ~/.ssh/config one share this parser.
+func parseConnectTimeoutKeyword(value string) (int, error) {
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid ConnectTimeout value %q: not a number of seconds", value)
+	}
+	if seconds < 0 || seconds > maxConnectTimeoutSeconds {
+		return 0, fmt.Errorf("invalid ConnectTimeout value %q: want 0 (no deadline) or 1..%d seconds", value, maxConnectTimeoutSeconds)
+	}
+	return seconds, nil
+}
+
+// resolveConnectTimeout applies the ssh2 keyword precedence: the -o value
+// wins over the ~/.ssh/config one, and the 30 s default fills what is left.
+// optionSet marks an explicit -o ConnectTimeout, so that "0" (deadline
+// removed) is not mistaken for "unset". The config value is parsed here so a
+// malformed keyword aborts with its name before any packet is sent.
+func resolveConnectTimeout(optionSet bool, optionSeconds int, configValue string) (int, error) {
+	if optionSet {
+		return optionSeconds, nil
+	}
+	if strings.TrimSpace(configValue) != "" {
+		return parseConnectTimeoutKeyword(configValue)
+	}
+	return defaultConnectTimeoutSeconds, nil
+}
+
 // resolveServerCertKeyAliases applies the sshd(8)-shaped -c/-h aliases to the
 // fork's -cert/-key values: the ssh2 alias wins when only it is given, and
 // giving both forms of the same knob is an error instead of a silent

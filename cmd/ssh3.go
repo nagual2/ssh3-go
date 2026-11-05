@@ -133,6 +133,19 @@ const (
 	ssh2HandshakeTimeout = 120 * time.Second
 )
 
+// reportSetupTimeout emits the human verdict when the ConnectTimeout deadline
+// cut the connection setup: UDP gives no "connection refused", so an
+// unreachable server only surfaces here instead of hanging until the QUIC
+// handshake idle timeout. It reports whether the deadline was the cause, so
+// the caller can skip its generic message.
+func reportSetupTimeout(setupCtx context.Context, seconds int) bool {
+	if seconds > 0 && setupCtx.Err() == context.DeadlineExceeded {
+		log.Error().Msgf("the connection setup timed out (ConnectTimeout=%ds)", seconds)
+		return true
+	}
+	return false
+}
+
 func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog io.Writer, ssh3Dir string, certPool *x509.CertPool, knownHostsPath string, knownHosts ssh3.KnownHosts,
 	strictHostKeyChecking ssh3.StrictHostKeyChecking, verifyHostKeyDNS verifyHostKeyDNSSetting,
 	oidcConfig []*oidc.OIDCConfig, options *client_config.Config, proxyRemoteAddr *net.UDPAddr, tty *os.File, tuning quicTuning, addressFamily int) (*quic.Conn, int) {
@@ -821,6 +834,8 @@ func ClientMain() int {
 	controlMasterOption := ""
 	controlPathOption := ""
 	controlPersistOption := ""
+	connectTimeoutOption := 0        // the -o ConnectTimeout=... value in seconds (armed with connectTimeoutOptionSet)
+	connectTimeoutOptionSet := false // an explicit -o ConnectTimeout was given, so "0" (deadline off) is not "unset"
 	parsersByKeyword := optionParsersByKeyword(cliParsers)
 	for _, keyValuePair := range optionOverrides {
 		key, value, _ := strings.Cut(keyValuePair, "=")
@@ -925,6 +940,15 @@ func ClientMain() int {
 				return -1
 			}
 			controlPersistOption = strings.TrimSpace(value)
+			continue
+		case strings.EqualFold(key, "ConnectTimeout"):
+			seconds, err := parseConnectTimeoutKeyword(value)
+			if err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			connectTimeoutOption = seconds
+			connectTimeoutOptionSet = true
 			continue
 		}
 		if optionName, ok := parsersByKeyword[strings.ToLower(key)]; ok {
@@ -1380,9 +1404,10 @@ func ClientMain() int {
 	// honored as an alias of the fork's UDPProxyJump (the jump host must run
 	// ssh3-server). Include directives are resolved by the config library.
 	tuning.KeepAlivePeriod = time.Second
-	requestTTYConfig := "" // the ~/.ssh/config RequestTTY value, empty when unset
-	termTypeConfig := ""   // the ~/.ssh/config Term value, empty when unset
-	escapeCharConfig := "" // the ~/.ssh/config EscapeChar value, empty when unset
+	requestTTYConfig := ""     // the ~/.ssh/config RequestTTY value, empty when unset
+	termTypeConfig := ""       // the ~/.ssh/config Term value, empty when unset
+	escapeCharConfig := ""     // the ~/.ssh/config EscapeChar value, empty when unset
+	connectTimeoutConfig := "" // the ~/.ssh/config ConnectTimeout value, empty when unset
 	if sshConfig != nil {
 		hostname := parsedUrl.Hostname()
 		if v, err := sshConfig.Get(hostname, "ServerAliveInterval"); err == nil && v != "" {
@@ -1416,6 +1441,9 @@ func ClientMain() int {
 				return -1
 			}
 			escapeCharConfig = v
+		}
+		if v, err := sshConfig.Get(hostname, "ConnectTimeout"); err == nil && v != "" {
+			connectTimeoutConfig = v
 		}
 		if proxyJumpResolved == "" {
 			if v, err := sshConfig.Get(hostname, "UDPProxyJump"); err == nil && v != "" {
@@ -1461,6 +1489,26 @@ func ClientMain() int {
 	if verifyHostKeyDNS.Mode != ssh3.VerifyHostKeyDNSNo {
 		log.Debug().Msgf("VerifyHostKeyDNS=%s", describeVerifyHostKeyDNS(verifyHostKeyDNS))
 	}
+
+	// ConnectTimeout resolution (ssh2 keyword): -o wins over the ~/.ssh/config
+	// keyword, the 30 s default fills what is left. The deadline bounds the
+	// connection setup — the QUIC dial waits for the server's transport
+	// parameters, and UDP gives no "connection refused" when the server is
+	// unreachable, so without it the client would hang until the QUIC
+	// handshake idle timeout instead.
+	connectTimeout, err := resolveConnectTimeout(connectTimeoutOptionSet, connectTimeoutOption, connectTimeoutConfig)
+	if err != nil {
+		log.Error().Msgf("%s", err)
+		return -1
+	}
+	setupCtx := ctx
+	cancelSetup := func() {}
+	if connectTimeout > 0 {
+		setupCtx, cancelSetup = context.WithTimeout(ctx, time.Duration(connectTimeout)*time.Second)
+		defer cancelSetup()
+	}
+	log.Debug().Msgf("ConnectTimeout=%d", connectTimeout)
+
 	if (controlMasterResolved == "yes" || controlMasterResolved == "auto") && proxyJumpResolved != "" {
 		log.Error().Msgf("-M/-control-master is not compatible with -J/-proxy-jump (from the command line or ~/.ssh/config)")
 		return -1
@@ -1517,16 +1565,22 @@ func ClientMain() int {
 			// this process is the detached master: connect and serve the
 			// control socket; it never runs sessions itself
 			idleTimeout, _ := parseControlPersist(controlPersistResolved)
-			qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, nil, nil, tuning, addressFamily)
+			qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, nil, nil, tuning, addressFamily)
 			if qconn == nil {
+				if status != 0 && !reportSetupTimeout(setupCtx, connectTimeout) {
+					log.Error().Msgf("could not setup transport for the control master")
+				}
 				return status
 			}
 			transport := &http3.Transport{}
-			c, err := client.Dial(ctx, options, qconn, transport, nil, client.WithMultiplexed())
+			c, err := client.Dial(setupCtx, options, qconn, transport, nil, client.WithMultiplexed())
 			if err != nil {
-				log.Error().Msgf("the control master could not establish its connection: %s", err)
+				if !reportSetupTimeout(setupCtx, connectTimeout) {
+					log.Error().Msgf("the control master could not establish its connection: %s", err)
+				}
 				return -1
 			}
+			cancelSetup() // the deadline served the setup: the master serves beyond it
 			defer c.Close()
 			ln, err := client.ListenControlMaster(controlPath)
 			if err != nil {
@@ -1601,11 +1655,13 @@ func ClientMain() int {
 				return -1
 			}
 			hopTuning.InitialPacketSize = hopPacketSize
-			qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, proxyAddress, tty, hopTuning, addressFamily)
+			qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, proxyAddress, tty, hopTuning, addressFamily)
 
 			if qconn == nil {
 				if status != 0 {
-					log.Error().Msgf("could not setup transport for proxy hop %s.", hop)
+					if !reportSetupTimeout(setupCtx, connectTimeout) {
+						log.Error().Msgf("could not setup transport for proxy hop %s.", hop)
+					}
 				}
 				return status
 			}
@@ -1615,9 +1671,11 @@ func ClientMain() int {
 			// datagrams on the same connection
 			transport := &http3.Transport{}
 
-			proxyClient, err := client.Dial(ctx, proxyOptions, qconn, transport, proxyAgentClient)
+			proxyClient, err := client.Dial(setupCtx, proxyOptions, qconn, transport, proxyAgentClient)
 			if err != nil {
-				log.Error().Msgf("could not establish SSH3 proxy conversation: %s", err)
+				if !reportSetupTimeout(setupCtx, connectTimeout) {
+					log.Error().Msgf("could not establish SSH3 proxy conversation: %s", err)
+				}
 				return -1
 			}
 
@@ -1669,11 +1727,13 @@ func ClientMain() int {
 		destinationTuning.InitialPacketSize = destinationPacketSize
 	}
 
-	qconn, status := setupQUICConnection(ctx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, destinationTuning, addressFamily)
+	qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, destinationTuning, addressFamily)
 
 	if qconn == nil {
 		if status != 0 {
-			log.Error().Msgf("could not setup transport for client")
+			if !reportSetupTimeout(setupCtx, connectTimeout) {
+				log.Error().Msgf("could not setup transport for client")
+			}
 		}
 		return status
 	}
@@ -1683,11 +1743,17 @@ func ClientMain() int {
 	// the same connection
 	transport := &http3.Transport{}
 
-	c, err := client.Dial(ctx, options, qconn, transport, agentClient)
+	c, err := client.Dial(setupCtx, options, qconn, transport, agentClient)
 	if err != nil {
-		log.Error().Msgf("could not dial %s: %s", options.CanonicalHostFormat(), err)
+		if !reportSetupTimeout(setupCtx, connectTimeout) {
+			log.Error().Msgf("could not dial %s: %s", options.CanonicalHostFormat(), err)
+		}
 		return -1
 	}
+	// the deadline only serves the connection setup: quic-go detaches the
+	// connection from the dial context once it is returned, so releasing the
+	// timer here leaves the established session untouched
+	cancelSetup()
 	if len(reverseForwardsFlag) > 0 {
 		if err := c.SetReverseForwards(reverseForwardsFlag); err != nil {
 			log.Error().Msgf("could not set up reverse forwarding: %s", err)
