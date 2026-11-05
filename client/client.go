@@ -335,6 +335,17 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	// conversation below carries the full CONNECT.
 	rawConn := transport.NewRawClientConn(qconn)
 
+	// the early verdict rides to the fresh CONNECT: the ssh3-c server's
+	// preauth state is per-connection, and a fresh CONNECT racing the
+	// 425 answer of the early one stalls it — the fresh-CONNECT path
+	// waits for the early verdict first (the canon one-shot retry
+	// shape). The dropped early flight (the 0-RTT rejection of a dead
+	// ticket) never answers: the wait is bounded, and the fresh CONNECT
+	// below re-rides as a plain first contact
+
+	earlyDone := make(chan int, 1)
+	earlyRode := false
+
 	// the debug kill-switch of the early flight (SSH3_NO_EARLY=1): the
 	// tunnel and the resumption ride, the bare CONNECT does not leave —
 	// the interop legs split the 0-RTT shape from the tunnel shape
@@ -346,15 +357,17 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 			earlyReq.Header.Set("User-Agent", ssh3.ThisVersion().GetVersionString())
 			if rs, err := rawConn.ClientConn.OpenRequestStream(ctx); err == nil {
 				if err := rs.SendRequestHeader(earlyReq); err == nil {
+					earlyRode = true
 					log.Debug().Msgf("the early CONNECT rides the 0-RTT window")
 					go func() {
 						rsp, err := rs.ReadResponse()
 						if err != nil {
-							// the 0-RTT rejection of a dead ticket rides here too
 							log.Debug().Msgf("the early CONNECT drew no response: %s", err)
+							earlyDone <- 0
 							return
 						}
 						log.Debug().Msgf("the early CONNECT got %s (the retry rides the conversation)", rsp.Status)
+						earlyDone <- rsp.StatusCode
 					}()
 				}
 			}
@@ -507,6 +520,22 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	}
 
 	log.Debug().Msgf("establish conversation with the server")
+
+	// the fresh CONNECT waits for the early verdict (the per-connection
+	// preauth state of the server serves one CONNECT at a time); the
+	// dropped early flight times the wait out and the fresh CONNECT
+	// re-rides as a plain first contact
+	if earlyRode {
+		select {
+		case st := <-earlyDone:
+			if st == 425 || st == 401 {
+				log.Debug().Msgf("the early flight drew %d, the fresh CONNECT re-rides", st)
+			}
+		case <-time.After(2 * time.Second):
+			log.Debug().Msgf("the early CONNECT drew no verdict in time, the fresh CONNECT re-rides")
+		}
+	}
+
 	err = conv.EstablishClientConversation(req, qconn, transport, ssh3.AVAILABLE_CLIENT_VERSIONS, dialOpts.compressAnnounce, rawConn)
 	if errors.Is(err, util.Unauthorized{}) {
 		log.Error().Msgf("Access denied from the server: unauthorized")
