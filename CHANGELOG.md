@@ -4,7 +4,7 @@ All notable changes to the **nagual2 fork** of SSH3, starting from the first for
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); each section maps to a release tag, newest first.
 
-## [Unreleased]
+## [0.1.41] - 2026-11-06
 
 ### Added
 - **`--password user:pass` rides the non-interactive basic auth**: the credentials form of the password method — the identity is built from the value given up front, so no terminal prompt happens (the interactive `-use-password` stays as it was). The split rides the **first** colon (the password may contain colons), both halves are mandatory and the case is untouched (the password is case-sensitive); a malformed value refuses with the flag name. The user of the credentials names the account it authenticates: it fills the username when nothing else does (ahead of the `~/.ssh/config` user, behind the operand `user@` and `-o User`), and a contradiction with another explicit user (`user@`, `?user=`, `-o User`) refuses instead of silently authenticating one account with the credentials of another. The form stays alone: `-i`, `-pubkey-for-agent`, `-use-password`, `-use-oidc` and `-oidc-config` refuse with both flag names (the client tries the first auth method only, a silent winner would be worse than a loud refusal). The flag exists in every build — the release `disable_password_auth` tag only swaps the server-side shadow backend, the client password code carries no tag — and the credentials are non-interactive, so `-f` keeps accepting them in the background. Mirrors the ssh3-c client (canon `906d73f`: the long form carries no ssh2 conflicts).
