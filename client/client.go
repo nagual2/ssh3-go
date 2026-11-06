@@ -605,9 +605,11 @@ func (c *Client) ForwardUDP(ctx context.Context, localUDPAddr *net.UDPAddr, remo
 						// plain datagram path) has no return address —
 						// it drops, and the relay lives on
 						if addr == nil {
-							log.Debug().Msgf("dropping a return datagram with no return address yet")
+							log.Debug().Msgf("relay rx %d bytes, no return address yet (dropped)", len(dgram))
 							continue
 						}
+
+						log.Debug().Msgf("relay rx %d bytes -> the tunneled endpoint", len(dgram))
 
 						_, err = conn.WriteToUDP(dgram, addr)
 						if err != nil {
