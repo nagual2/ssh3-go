@@ -1843,6 +1843,17 @@ func ClientMain() int {
 	var proxyAddress *net.UDPAddr
 	var outerSize uint16
 	proxyHopCount := 0
+	// the clients of the chain: the exit closes every hop connection
+	// with the CC (the B18 teardown shape) — a hop left open holds the
+	// server's tunnel channel (the ssh3-c servers route the direct-udp
+	// through a single per-process target) and the next run's chain
+	// draws "already forwarded" against the same server
+	jumpClients := make([]*client.Client, 0, 8)
+	defer func() {
+		for _, jc := range jumpClients {
+			jc.Close()
+		}
+	}()
 	if proxyJumpResolved != "" {
 		hops, err := parseProxyJumpChain(proxyJumpResolved)
 		if err != nil {
@@ -1906,6 +1917,7 @@ func ClientMain() int {
 				}
 				return -1
 			}
+			jumpClients = append(jumpClients, proxyClient)
 
 			/*
 			 * the datagram budget probe (the canon dgram_need): the
