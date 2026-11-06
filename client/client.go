@@ -597,6 +597,18 @@ func (c *Client) ForwardUDP(ctx context.Context, localUDPAddr *net.UDPAddr, remo
 							log.Error().Msgf("could open receive datagram on channel: %s", err)
 							return
 						}
+
+						// the return address rides the first outbound
+						// packet of the tunneled endpoint; a datagram
+						// before it (the datagram-budget probe of the
+						// jump flow echoes back through the server's
+						// plain datagram path) has no return address —
+						// it drops, and the relay lives on
+						if addr == nil {
+							log.Debug().Msgf("dropping a return datagram with no return address yet")
+							continue
+						}
+
 						_, err = conn.WriteToUDP(dgram, addr)
 						if err != nil {
 							log.Error().Msgf("could open write datagram on socket: %s", err)
