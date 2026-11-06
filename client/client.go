@@ -256,6 +256,13 @@ type DialOption func(*dialOptions)
 type dialOptions struct {
 	multiplexed bool
 
+	// noEarly skips the 0-RTT early CONNECT of the jump flow: the
+	// tunneled destination connections draw the server's early-window
+	// 425 (the per-connection preauth state serves one CONNECT at a
+	// time) and the quic-go handshake drive stalls behind it — the
+	// R3-proven shape rides the tunnel without the early flight
+	noEarly bool
+
 	// compressAnnounce is the literal "compress=" value of the
 	// client's version string (the -C of the CLI, the resolved value
 	// of ssh3.ResolveCompressAnnounce): nil keeps the build's codec
@@ -276,6 +283,14 @@ func WithMultiplexed() DialOption {
 // string the client sends, verbatim.
 func WithCompressAnnounce(announce string) DialOption {
 	return func(o *dialOptions) { o.compressAnnounce = &announce }
+}
+
+// WithNoEarly skips the 0-RTT early CONNECT: the jump flow rides the
+// tunneled destination connections without the early flight (the
+// R3-proven shape; the early window + the quic-go flight shape is the
+// open cross-implementation item).
+func WithNoEarly() DialOption {
+	return func(o *dialOptions) { o.noEarly = true }
 }
 
 func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
@@ -350,7 +365,7 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	// tunnel and the resumption ride, the bare CONNECT does not leave —
 	// the interop legs split the 0-RTT shape from the tunnel shape
 
-	if os.Getenv("SSH3_NO_EARLY") == "" && GetTicketCache().RetryContract() {
+	if os.Getenv("SSH3_NO_EARLY") == "" && !dialOpts.noEarly && GetTicketCache().RetryContract() {
 		earlyReq, err := http.NewRequest("CONNECT", requestUrl, nil)
 		if err == nil {
 			earlyReq.Proto = "ssh3"

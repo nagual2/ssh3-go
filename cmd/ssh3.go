@@ -1910,7 +1910,7 @@ func ClientMain() int {
 			// datagrams on the same connection
 			transport := &http3.Transport{}
 
-			proxyClient, err := client.Dial(setupCtx, proxyOptions, qconn, transport, proxyAgentClient, client.WithCompressAnnounce(compressAnnounce))
+			proxyClient, err := client.Dial(setupCtx, proxyOptions, qconn, transport, proxyAgentClient, client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly())
 			if err != nil {
 				if !reportSetupTimeout(setupCtx, connectTimeout) {
 					log.Error().Msgf("could not establish SSH3 proxy conversation: %s", err)
@@ -2035,7 +2035,7 @@ func ClientMain() int {
 	// the same connection
 	transport := &http3.Transport{}
 
-	c, err := client.Dial(setupCtx, options, qconn, transport, agentClient, client.WithCompressAnnounce(compressAnnounce))
+	c, err := client.Dial(setupCtx, options, qconn, transport, agentClient, client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly())
 	if err != nil {
 		if !reportSetupTimeout(setupCtx, connectTimeout) {
 			log.Error().Msgf("could not dial %s: %s", options.CanonicalHostFormat(), err)
