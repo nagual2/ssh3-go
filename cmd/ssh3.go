@@ -304,16 +304,13 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 			knownHostsPath)
 	}
 
-	log.Debug().Msgf("dialing QUIC host at %s", remoteAddr)
-	qClient, err := quic.DialEarly(ctx,
-		udpConn,
-		remoteAddr,
-		tlsConf,
-		&qconf)
-	if err == nil {
-		// A successful handshake only proves that the chain is trusted (system
-		// CAs or a pinned certificate as anchor): compare the leaf against the
-		// pins ourselves so that a silently rotated certificate is detected.
+	// finishConnection runs the post-handshake verdicts on an established
+	// connection — the first dial and the R7-T2 AIA-completed retry share
+	// them (one source of truth for the canon 2.3-2.5 flows):
+	// A successful handshake only proves that the chain is trusted (system
+	// CAs or a pinned certificate as anchor): compare the leaf against the
+	// pins ourselves so that a silently rotated certificate is detected.
+	finishConnection := func(qClient *quic.Conn) (*quic.Conn, int) {
 		if !skipHostVerification {
 			if peerCerts := qClient.ConnectionState().TLS.PeerCertificates; len(peerCerts) > 0 {
 				// SSHFP (VerifyHostKeyDNS) rides BEFORE the pin verdicts (canon
@@ -387,10 +384,73 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 		return qClient, 0
 	}
 
+	log.Debug().Msgf("dialing QUIC host at %s", remoteAddr)
+	qClient, err := quic.DialEarly(ctx,
+		udpConn,
+		remoteAddr,
+		tlsConf,
+		&qconf)
+	if err == nil {
+		return finishConnection(qClient)
+	}
+
 	if transportErr, ok := err.(*quic.TransportError); ok {
 		if transportErr.ErrorCode.IsCryptoError() {
 			log.Debug().Msgf("received QUIC crypto error on first connection attempt: %s", err)
 			_, hostPinned := knownHosts[hostKey]
+
+			// capture the actual peer certificate: dial once more with the
+			// verification disabled and grab the certificates through the
+			// verify callback. The capture runs ahead of the
+			// StrictHostKeyChecking refusals: canon 2.2 wants the chain
+			// verdict before the pin verdicts, and the R7-T2 AIA chase rides
+			// the same capture.
+			captureConf := tlsConf.Clone()
+			captureConf.InsecureSkipVerify = true
+			var peerCertificate *x509.Certificate
+			var peerCertificates []*x509.Certificate
+			certError := fmt.Errorf("we don't want to start a totally insecure connection")
+			captureConf.VerifyConnection = func(ctx tls.ConnectionState) error {
+				peerCertificates = ctx.PeerCertificates
+				peerCertificate = ctx.PeerCertificates[0]
+				return certError
+			}
+
+			_, captureErr := quic.DialEarly(ctx,
+				udpConn,
+				remoteAddr,
+				captureConf,
+				&qconf)
+			if !errors.Is(captureErr, certError) {
+				log.Error().Msgf("could not create client QUIC connection: %s", captureErr)
+				return nil, -1
+			}
+
+			// R7-T2 (AIA chasing, canon 2.6): the verification may have failed
+			// only because the intermediates are missing — the server presented
+			// the leaf alone and the pool holds the anchors. Chase the
+			// caIssuers URLs of the presented certificates and retry the
+			// handshake with the fetched ones verified as plain intermediates
+			// (they never land in the anchor pool); the post-handshake
+			// verdicts ride the retried connection like any other. A failed
+			// chase falls through to the historical refusal flows below, with
+			// the original error riding the messages.
+			if !skipHostVerification {
+				fetched := aiaCompleteChain(ctx, peerCertificates, certPool, ssh3Dir, tlsConf.ServerName)
+				if len(fetched) > 0 {
+					aiaConf := aiaRetryTLSConfig(tlsConf, fetched, certPool)
+					qClient, aiaErr := quic.DialEarly(ctx,
+						udpConn,
+						remoteAddr,
+						aiaConf,
+						&qconf)
+					if aiaErr == nil {
+						log.Info().Msgf("the certificate chain of %s was completed with %d fetched intermediate certificate(s) (AIA chasing)", hostKey, len(fetched))
+						return finishConnection(qClient)
+					}
+					log.Debug().Msgf("the handshake of %s failed even with the fetched intermediates: %s", hostKey, aiaErr)
+				}
+			}
 
 			if hostPinned && strictHostKeyChecking != ssh3.StrictHostKeyCheckingNo {
 				// The pinned certificate(s) did not verify the server: the
@@ -415,28 +475,6 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 			// decide without any user interaction
 			if tty == nil && strictHostKeyChecking == ssh3.StrictHostKeyCheckingAsk {
 				log.Error().Msgf("insecure server cert in non-terminal session, aborting")
-				return nil, -1
-			}
-
-			// capture the actual peer certificate: dial once more with the
-			// verification disabled and grab the certificate through the
-			// verify callback
-			captureConf := tlsConf.Clone()
-			captureConf.InsecureSkipVerify = true
-			var peerCertificate *x509.Certificate
-			certError := fmt.Errorf("we don't want to start a totally insecure connection")
-			captureConf.VerifyConnection = func(ctx tls.ConnectionState) error {
-				peerCertificate = ctx.PeerCertificates[0]
-				return certError
-			}
-
-			_, err := quic.DialEarly(ctx,
-				udpConn,
-				remoteAddr,
-				captureConf,
-				&qconf)
-			if !errors.Is(err, certError) {
-				log.Error().Msgf("could not create client QUIC connection: %s", err)
 				return nil, -1
 			}
 

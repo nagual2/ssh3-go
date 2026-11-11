@@ -78,6 +78,7 @@ An escape character at the start of a line controls the client: `~.` disconnects
 - The console is switched to UTF-8 and VT processing for the session and restored on exit. Use a Unicode-capable font (Consolas, Lucida Console).
 - There is no `/dev/tty` on Windows, so the interactive TOFU prompt cannot run: pin the server certificate in `%USERPROFILE%\.ssh3\known_hosts` (`host:port/path x509-certificate <base64 DER>`), or use `-insecure` consciously.
 - The client trust pool rides the embedded ISRG roots (Let's Encrypt) on top of the system store, so an LE-signed server verifies even on Windows SKUs with a truncated certificate store; a private CA can ride `%USERPROFILE%\.ssh3\ca-bundle.pem` (the `SSH3_CA_BUNDLE` environment variable overrides the path).
+- A chain whose intermediate certificates are missing (the server presents the leaf alone) is completed through the certificate's AIA `caIssuers` URL; the fetched intermediates are verified against the trust anchors before use and cached in `%USERPROFILE%\.ssh3\aia-cache`, so an offline run rides the stale cache.
 - SSH agent forwarding is unavailable (unix socket only); window resize is not forwarded (no SIGWINCH equivalent).
 
 ## Status
