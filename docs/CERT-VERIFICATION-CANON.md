@@ -36,15 +36,15 @@ CA-выпуск (DNS-01, или TLS-ALPN-01 через временно откр
 | 3.2 | Ротация: SSHFP-запись новой версии — до/сразу после ротации; SAN покрывает все имена цели; никаких скрытых ротаций без SSHFP/уведомления |
 | 3.3 | Релизный клиент не носит keylog-колбэк (отладка — отдельной сборкой) |
 
-## 4. Сверка реализаций (2026-11-04; ssh3-c колонка обновлена 2026-11-05)
+## 4. Сверка реализаций (2026-11-04; ssh3-c — 2026-11-05, ssh3-go — 2026-11-11)
 
 | Пункт канона | ssh3-go | ssh3-c | ssh3-rust |
 |--------------|---------|--------|-----------|
 | 2.2 якорь CA ∪ пины | ✅ (`certPool`, системные CA) | ✅ 2026-11-05 — record-only verify-колбэк, вердикт в `s3_ssl_t.chain_err` (`66f5180`); якорь = пины (`s3_ssl_client_add_pin`, PARTIAL_CHAIN) ∪ `set_default_verify_paths`; энфорсмент ssh3-слоем до credential'ов | заявлено в волне 7 — сверить |
 | 2.2 SAN против цели | ✅ (TLS hostname verify + selfsigned-хак) | ✅ 2026-11-05 — пост-хендшейк `X509_check_host`/`X509_check_ip` против цели (`s3_cli_san_ok`); selfsigned.ssh3-хака нет: record-only вердикт не нуждается в подмене ServerName — пин-якорь покрывает самоподписанный лист без IP SAN | заявлено — сверить |
 | 2.3 Matches/Changed/Unknown | ✅ (`CheckCertificate`, accept-new, `StrictHostKeyChecking`) | ✅ 2026-11-05 — машина `s3_hostkey_decide` (`5ede8fb`): Unknown/Changed/Matches + SHK ask (дефолт)/yes/no/accept-new (автопин), TOFU-промпт сохранён | заявлено — сверить |
-| 2.4 renewal-семантика | ❌ byte-exact → легитимный renewal = отказ (→ R5) | ✅ 2026-11-05 — CHANGED + chain CA-valid + SAN → перепин (`s3_cli_kh_replace`, лог «certificate rotated, chain valid»); self-signed ротация — через SSHFP-перепин | — (после сверки) |
-| 2.5 SSHFP | ✅ (`checkHostKeySSHFP`) | ✅ 2026-11-05 — `s3_ssh3_sshfp` (`c00139b`, порт sshfp.go 1:1, сырой DNS по UDP), `-o VerifyHostKeyDNS=yes|ask|no`, mismatch → отказ, verified → перепин CHANGED-самоподписанного | — (после сверки) |
+| 2.4 renewal-семантика | ✅ — CA-ротация 2026-11-05 (`ab129e4`): CHANGED + chain CA-valid + SAN → `ReplaceKnownHost` (лог «certificate rotated, chain valid»); self-signed 2026-11-11 (`2dd5589`): SSHFP VERIFIED → перепин (лог «certificate rotated, sshfp verified»), без DNS-сигнала — отказ | ✅ 2026-11-05 — CHANGED + chain CA-valid + SAN → перепин (`s3_cli_kh_replace`, лог «certificate rotated, chain valid»); self-signed ротация — через SSHFP-перепин | — (после сверки) |
+| 2.5 SSHFP | ✅ (`checkHostKeySSHFP`; verified → перепин CHANGED-самоподписанного, `2dd5589`) | ✅ 2026-11-05 — `s3_ssh3_sshfp` (`c00139b`, порт sshfp.go 1:1, сырой DNS по UDP), `-o VerifyHostKeyDNS=yes|ask|no`, mismatch → отказ, verified → перепин CHANGED-самоподписанного | — (после сверки) |
 | 3.3 keylog в релизе | ок | ✅ 2026-11-05 — keylog-cb в клиентском CTX только при `S3_KEYLOG`; `-keylog`-файл остался у интероп-харнеса | сверить |
 
 Приёмка ssh3-c: ctest 51/51 (release+asan), mingw чисто; e2e `ssh3-c/interop/cert-verify-e2e.sh` — CA-первый-контакт, renewal-перепин, self-signed accept-new, ask non-console, SSHFP mismatch/verified/soften (python-стаб DNS), keylog-гейт. Детали — `ssh3-c/docs/PLAN-CURRENT.md` (Блок 2, B-вер).

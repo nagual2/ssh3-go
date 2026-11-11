@@ -1588,10 +1588,11 @@ func ClientMain() int {
 
 	ctx := context.Background()
 
-	pool, err := x509.SystemCertPool()
-	if err != nil {
-		log.Fatal().Msgf("%s", err)
-	}
+	// the trust pool of the client (R7-T1 CA-bundle bootstrap): the system
+	// store merged with the embedded ISRG roots and the optional user
+	// bundle, so a Windows Server SKU with a truncated store keeps
+	// verifying Let's Encrypt chains without -insecure
+	pool := loadClientCAPool(ssh3Dir)
 
 	optionsParsers, err := internal.GetPluginsClientOptionsParsers()
 	if err != nil {

@@ -77,6 +77,7 @@ Ein Escape-Zeichen am Zeilenanfang steuert den Client: `~.` trennt die Verbindun
 - Flags (z. B. `-privkey`) müssen **vor** der positionalen URL stehen: Gos Flag-Parser stoppt beim ersten positionalen Argument.
 - Die Konsole wird für die Sitzung auf UTF-8 und VT-Verarbeitung umgeschaltet und beim Beenden zurückgesetzt. Verwenden Sie einen Unicode-fähigen Zeichensatz (Consolas, Lucida Console).
 - Es gibt kein `/dev/tty` unter Windows, daher ist die interaktive TOFU-Abfrage nicht möglich: Hinterlegen Sie das Serverzertifikat in `%USERPROFILE%\.ssh3\known_hosts` (`host:port/path x509-certificate <base64 DER>`) oder verwenden Sie bewusst `-insecure`.
+- Der Vertrauenspool des Clients trägt die eingebetteten ISRG-Wurzeln (Let's Encrypt) über dem Systemspeicher, sodass ein Server mit LE-Zertifikat auch auf Windows-SKUs mit gekürztem Zertifikatsspeicher verifiziert wird; eine private CA kann in `%USERPROFILE%\.ssh3\ca-bundle.pem` liegen (der Pfad wird über die Umgebungsvariable `SSH3_CA_BUNDLE` überschrieben).
 - SSH-Agent-Forwarding ist nicht verfügbar (nur Unix-Sockets); Fenstergrößenänderungen werden nicht weitergeleitet (kein SIGWINCH-Äquivalent).
 
 ## Status
