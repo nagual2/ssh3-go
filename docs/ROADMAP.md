@@ -15,7 +15,7 @@
 ## R3. Бенчмарки SSH2 vs SSH3
 
 - Метрики: throughput bulk-transfer (scp-эквивалент), время установления сессии/handshake, latency, CPU/RAM на сервере.
-- Статус: выполнено — методика и таблицы в `docs/` (`BENCH-2026-09-29.md`, `PROFILE-2026-09-29.md`, `B1-*`); дополнено проходом exec-латентности 2026-10-04 (cold exec 140→26 ms на loopback, `bench/exec-latency.sh`). Цифры идут в статью R1.
+- Статус: выполнено — методика и таблицы в `docs/` (`BENCH-2026-09-29.md`, `PROFILE-2026-09-29.md`, `B1-*`); дополнено проходом exec-латентности 2026-10-04 (cold exec 140→26 ms на loopback, `bench/exec-latency.sh`). **Финальный LAN-прогон 2026-11-12** (`BENCH-R3-FINAL-2026-11-11.md`, код data path = main): handshake — SSH3 быстрее в ×1.81 на проводе (главный транспортный плюс); bulk — SSH2 впереди ×2.3–3.0 (узкое место SSH3 — userspace-крипто QUIC на слабом серверном CPU + NAT WSL2 на пути клиента, не аллокации data path); CPU-цена SSH3 ~×4.4 ядеро-секунд на байт; тёплые сессии (ControlMaster) — 9.6 мс/exec. Цифры идут в статью R1.
 
 ## R5. Взаимодействие с nginx + ротация сертификатов
 
