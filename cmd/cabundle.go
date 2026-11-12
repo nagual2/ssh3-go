@@ -4,7 +4,7 @@ package cmd
 // the "system CA store" path): the Go client builds its chain from the
 // static content of the system stores, so a Windows Server SKU with a
 // truncated store (no ISRG Root X1/X2) fails to verify Let's Encrypt chains
-// and the client demanded -insecure. The trust pool therefore merges three
+// and the client demanded -insecure. The trust pool therefore merges four
 // sources:
 //
 //   - the system certificate store (the anchor the client already had),
@@ -13,7 +13,10 @@ package cmd
 //     anchors under the canon — the embedded trust does not anchor itself,
 //     it anchors these well-known public roots),
 //   - an optional user bundle file (~/.ssh3/ca-bundle.pem, SSH3_CA_BUNDLE
-//     overrides the path) for private CAs.
+//     overrides the path) for private CAs,
+//   - the Windows root program cache (~/.ssh3/authroots.pem, R7-T3): roots
+//     collected from observed chains whose hash the signature-verified
+//     Microsoft CTL vouches for (see rootprogram.go).
 //
 // The merged pool is a strict superset of the old system-only pool, so the
 // default behaviour only ever adds trust. A missing or broken user file and
@@ -135,5 +138,11 @@ func loadClientCAPool(ssh3Dir string) *x509.CertPool {
 	default:
 		log.Warn().Msgf("ca-bundle: could not read %s: %s", bundlePath, err)
 	}
+
+	// R7-T3 (the Windows root program): the CTL-blessed roots collected from
+	// observed chains ride as the fourth source, gated by the signature of
+	// the cached verdict (see rootprogram.go). The same load initializes the
+	// process-wide state the refresh goroutine and the dial-path gates use.
+	rootProgramDefault.load(ssh3Dir, pool)
 	return pool
 }

@@ -84,6 +84,12 @@ var _ = BeforeSuite(func() {
 	var err error
 	ssh3Path, err = Build("../cmd/ssh3/main.go")
 	Expect(err).ToNot(HaveOccurred())
+	// The spawned CLI processes are real clients: without this gate every
+	// harness run would fetch the Microsoft CTL cabinets over the network
+	// and write the root-program cache into the real user state (R7-T3;
+	// the root program itself is covered by the cmd unit tests on temp
+	// dirs with the network forbidden).
+	os.Setenv("SSH3_NO_ROOT_PROGRAM", "1")
 	if os.Getenv("SSH3_INTEGRATION_TESTS_WITH_SERVER_ENABLED") == "1" {
 		// Tests implying a server will only work on Linux
 		// (the server currently only builds on Linux)

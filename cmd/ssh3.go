@@ -313,6 +313,18 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 	finishConnection := func(qClient *quic.Conn) (*quic.Conn, int) {
 		if !skipHostVerification {
 			if peerCerts := qClient.ConnectionState().TLS.PeerCertificates; len(peerCerts) > 0 {
+				// R7-T3 (the Windows root program): the negative verdicts of
+				// the signature-verified CTL apply before any acceptance — a
+				// certificate on Microsoft's disallowed list, or a chain that
+				// anchors at a root the program removed, refuses whatever the
+				// pins say about it (the TLS verdict stays the trust floor,
+				// the root program narrows it)
+				if reason, veto := rootProgramDefault.vetoesChain(peerCerts, certPool); veto {
+					log.Error().Msgf("the certificate chain of %s is refused: %s", hostKey, reason)
+					qClient.CloseWithError(quic.ApplicationErrorCode(0), "the server certificate is refused by the Microsoft root program verdict")
+					return nil, -1
+				}
+
 				// SSHFP (VerifyHostKeyDNS) rides BEFORE the pin verdicts (canon
 				// 2.5): a mismatch vetoes the connection — and the rotation
 				// re-pin — before any record is written. The pinned-certificate
@@ -436,8 +448,19 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 			// chase falls through to the historical refusal flows below, with
 			// the original error riding the messages.
 			if !skipHostVerification {
+				// R7-T3 (the Windows root program): a root the chain carries
+				// may be blessed by the cached CTL verdict — the blessing
+				// grows the anchor pool before the chase and the retry, so a
+				// chain whose only missing piece was the root completes
+				// without any fetch (and one whose root arrives with the
+				// chase anchors as well: the fetched root itself rides the
+				// gate below)
+				blessed := rootProgramDefault.harvest(peerCertificates, certPool)
 				fetched := aiaCompleteChain(ctx, peerCertificates, certPool, ssh3Dir, tlsConf.ServerName)
 				if len(fetched) > 0 {
+					blessed += rootProgramDefault.harvest(fetched, certPool)
+				}
+				if len(fetched) > 0 || blessed > 0 {
 					aiaConf := aiaRetryTLSConfig(tlsConf, fetched, certPool)
 					qClient, aiaErr := quic.DialEarly(ctx,
 						udpConn,
@@ -445,7 +468,11 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 						aiaConf,
 						&qconf)
 					if aiaErr == nil {
-						log.Info().Msgf("the certificate chain of %s was completed with %d fetched intermediate certificate(s) (AIA chasing)", hostKey, len(fetched))
+						if len(fetched) > 0 {
+							log.Info().Msgf("the certificate chain of %s was completed with %d fetched intermediate certificate(s) (AIA chasing)", hostKey, len(fetched))
+						} else {
+							log.Info().Msgf("the certificate chain of %s was completed after %d root certificate(s) were blessed by the Windows root program cache", hostKey, blessed)
+						}
 						return finishConnection(qClient)
 					}
 					log.Debug().Msgf("the handshake of %s failed even with the fetched intermediates: %s", hostKey, aiaErr)
@@ -1627,10 +1654,15 @@ func ClientMain() int {
 	ctx := context.Background()
 
 	// the trust pool of the client (R7-T1 CA-bundle bootstrap): the system
-	// store merged with the embedded ISRG roots and the optional user
-	// bundle, so a Windows Server SKU with a truncated store keeps
-	// verifying Let's Encrypt chains without -insecure
+	// store merged with the embedded ISRG roots, the optional user
+	// bundle and the R7-T3 Windows root program cache, so a Windows Server
+	// SKU with a truncated store keeps verifying Let's Encrypt chains
+	// without -insecure
 	pool := loadClientCAPool(ssh3Dir)
+	// R7-T3: the background refresh of the CTL cabinets rides off the dial
+	// path entirely — a fresh cache means zero requests, and the refreshed
+	// verdicts reach the current process's gates and the next start's pool
+	rootProgramDefault.refreshAsync()
 
 	optionsParsers, err := internal.GetPluginsClientOptionsParsers()
 	if err != nil {
