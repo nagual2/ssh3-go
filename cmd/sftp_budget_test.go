@@ -31,14 +31,16 @@ func newStubSFTPChannel() *stubSFTPChannel {
 	return &stubSFTPChannel{readStarted: make(chan struct{}, 1), releaseRead: make(chan struct{})}
 }
 
-func (s *stubSFTPChannel) NextMessage() (ssh3Messages.Message, error) {
+func (s *stubSFTPChannel) NextData() (ssh3Messages.SSHDataType, []byte, error) {
+	// the RWC read path of the ring wave pulls data frames through
+	// NextData (channel_read.go): this is the serve path's first read
 	s.reads.Add(1)
 	select {
 	case s.readStarted <- struct{}{}:
 	default:
 	}
 	<-s.releaseRead
-	return nil, io.EOF
+	return 0, nil, io.EOF
 }
 
 func (s *stubSFTPChannel) Close() {

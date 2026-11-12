@@ -83,6 +83,13 @@ type Channel interface {
 	ConversationID() ConversationID
 	ConversationStreamID() uint64
 	NextMessage() (ssh3.Message, error)
+	// NextData hands out the payload of the next data frame as a view into
+	// the receive ring (channel_read.go): the view stays valid until a
+	// Consume retires its bytes, so a consumer pays no copy for the parse.
+	NextData() (dataType ssh3.SSHDataType, view []byte, err error)
+	// Consume retires n payload bytes of the views NextData handed out, in
+	// wire order; partial consumption inside a view is allowed.
+	Consume(n int)
 	ReceiveDatagram(ctx context.Context) ([]byte, error)
 	SendDatagram(datagram []byte) error
 	SendRequest(r *ssh3.ChannelRequestMessage) error
@@ -112,6 +119,11 @@ type channelImpl struct {
 	recv           *quic.Stream
 	send           io.WriteCloser
 	datagramsQueue *util.DatagramsQueue
+
+	// ring owns the receive stream for parsing (channel_read.go): nil until
+	// the first NextMessage/NextData, so channels without inbound reads
+	// never allocate the buffer
+	ring *channelRecvRing
 	PtyReqHandler
 	X11ReqHandler
 	ShellReqHandler
@@ -362,35 +374,67 @@ func (c *channelImpl) ConversationID() ConversationID {
 	return c.ChannelInfo.ConversationID
 }
 
-// / The error is EOF only if no bytes were read. If an EOF happens
-// / after reading some but not all the bytes, nextMessage returns
-// / ErrUnexpectedEOF.
-func (c *channelImpl) nextMessage() (ssh3.Message, error) {
-	return ssh3.ParseMessage(util.NewReader(c.recv))
-}
-
 // The returned  message will neither be ChannelOpenConfirmationMessage nor ChannelOpenFailureMessage
 // as this function handles it internally
+//
+// The messages ride the receive ring (channel_read.go): data frames parse
+// into views and are materialized back into the legacy string message only
+// when NextMessage is the consumer — the NextData path (the hot one) never
+// pays that copy. The wire order across both consumers is kept by the ring's
+// parse sequence.
 func (c *channelImpl) NextMessage() (ssh3.Message, error) {
-	genericMessage, err := c.nextMessage()
-	if err != nil {
-		return nil, err
-	}
+	ring := c.recvRing()
+	for {
+		// pick the front-most parsed item in wire order
+		var fr *recvFrame
+		pm := ring.frontMsg()
+		if !ring.queueEmpty() {
+			fr = &ring.frames[ring.fh]
+		}
+		var genericMessage ssh3.Message
+		switch {
+		case fr != nil && (pm == nil || fr.seq < pm.seq):
+			// a data frame at the front: synthesize the legacy message — the
+			// string copy is the price of the NextMessage API
+			genericMessage = &ssh3.DataOrExtendedDataMessage{
+				DataType: fr.dataType,
+				Data:     string(fr.view),
+			}
+			ring.popFrame()
+		case pm != nil:
+			genericMessage = pm.msg
+			ring.popMsg()
+		default:
+			done, err := ring.parseOne()
+			if err != nil {
+				return nil, err
+			}
+			if !done {
+				if ring.free() == 0 {
+					return nil, errRecvRingFull{capacity: ring.capacity}
+				}
+				if err := ring.fill(); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
 
-	switch message := genericMessage.(type) {
-	case *ssh3.ChannelOpenConfirmationMessage:
-		c.confirmReceived = true
-		// let's read the next message
-		return c.NextMessage()
-	case *ssh3.ChannelOpenFailureMessage:
-		return nil, ChannelOpenFailure{ReasonCode: message.ReasonCode, ErrorMsg: message.ErrorMessageUTF8}
-	}
+		switch message := genericMessage.(type) {
+		case *ssh3.ChannelOpenConfirmationMessage:
+			c.confirmReceived = true
+			// let's read the next message
+			continue
+		case *ssh3.ChannelOpenFailureMessage:
+			return nil, ChannelOpenFailure{ReasonCode: message.ReasonCode, ErrorMsg: message.ErrorMessageUTF8}
+		}
 
-	// TODO: might be problematic if a peer already sends data along the channel opening
-	if !c.confirmSent {
-		return nil, MessageOnNonConfirmedChannel{message: genericMessage}
+		// TODO: might be problematic if a peer already sends data along the channel opening
+		if !c.confirmSent {
+			return nil, MessageOnNonConfirmedChannel{message: genericMessage}
+		}
+		return genericMessage, nil
 	}
-	return genericMessage, nil
 }
 
 func (c *channelImpl) maybeSendHeader() error {
