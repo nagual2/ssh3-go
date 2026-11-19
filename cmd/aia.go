@@ -31,21 +31,30 @@ package cmd
 // response body by maxAIAFetchBytes. Every fetched certificate is cached
 // under the ssh3 state directory (a warm cache keeps the later connections
 // off the network — the second dial of the same server makes zero requests);
-// an unavailable network rides the stale cache.
+// an unavailable network rides the stale cache. The fetch policy of the pass
+// 5 review (aiaURLAdmissible, the port of the C s3_ssh3_aia_url_admissible)
+// rides before every network call: the scheme allow-list, the control bytes
+// and the private-target gates keep the certificate-controlled caIssuers url
+// from turning the chase into a client-side probe, and the cache directory
+// bounds at maxAIACacheEntries entries.
 
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -59,6 +68,10 @@ const (
 	// maxAIAFetchBytes caps the caIssuers response body (a real intermediate
 	// certificate is a few kilobytes; the cap bounds a hostile server).
 	maxAIAFetchBytes = 256 * 1024
+
+	// maxAIACacheEntries bounds the cache directory (the pass 5 review cap,
+	// the C canon S3_AIA_CACHE_ENTRIES_MAX).
+	maxAIACacheEntries = 64
 )
 
 var (
@@ -67,7 +80,187 @@ var (
 
 	// aiaChaseBudget bounds the whole chase of one chain (all fetches).
 	aiaChaseBudget = 20 * time.Second
+
+	// aiaResolveIP walks the DNS answers of a caIssuers host (the resolved
+	// half of the private-target gate). The variable is the injection point
+	// of the tests — the Go shape of the C s3_ssh3_aia_resolve_hook;
+	// production rides the plain resolver.
+	aiaResolveIP = func(host string) ([]net.IP, error) {
+		return net.LookupIP(host)
+	}
 )
+
+// aiaPolicyError is the refusal of the caIssuers fetch policy: the log
+// carries the gate class and the host — never the full URL (the caIssuers
+// input rides the peer certificate, the log line must not amplify it).
+type aiaPolicyError struct {
+	gate string
+	host string
+}
+
+func (e *aiaPolicyError) Error() string {
+	if e.host == "" {
+		return fmt.Sprintf("refused by the fetch policy (%s gate)", e.gate)
+	}
+	return fmt.Sprintf("refused by the fetch policy (%s gate): host %q", e.gate, e.host)
+}
+
+// aiaURLAdmissible is the fetch policy of the pass 5 review (the port of the
+// C s3_ssh3_aia_url_admissible): the caIssuers URL rides the peer
+// certificate — the attacker-flappable input — so the fetch refuses the
+// shapes that turn the chase into a client-side probe. The gates, in the C
+// order: the empty url, the control bytes (the CRLF of the request-line
+// injection, the tabs and the spaces of the header shaping — any byte below
+// 0x21 or the DEL refuse on the whole string), the scheme allow-list (http
+// and https only, the case folded — the IA5 string of the certificate
+// carries the case the CA chose), the host shape (the brackets of the v6
+// literal, the single port colon — the unbracketed multi-colon form is not
+// the fetcher shape), and the private targets — the literals ride the range
+// rules directly, the names walk the resolved answers, one private answer
+// refuses. The resolve failure refuses too — the fetch would fail the same
+// dial anyway. The SSH3_AIA_ALLOW_PRIVATE valve (the C S3_AIA_ALLOW_PRIVATE)
+// restores the unrestricted dial for the corporate PKI shapes — the env is
+// the machine owner's territory, the certificate cannot set it; it reads the
+// presence only (the C getenv semantics) and lifts the private gates alone —
+// the control bytes, the scheme and the host shape always apply. The refusal
+// carries the gate class and the host, never the full URL.
+func aiaURLAdmissible(caIssuersURL string) error {
+	if caIssuersURL == "" {
+		return &aiaPolicyError{gate: "empty url"}
+	}
+
+	// the control bytes refuse on the whole string (the C loop)
+	for i := 0; i < len(caIssuersURL); i++ {
+		if b := caIssuersURL[i]; b < 0x21 || b == 0x7f {
+			return &aiaPolicyError{gate: "control bytes"}
+		}
+	}
+
+	// the scheme: the http family only, the case folded
+	var rest string
+	switch {
+	case aiaSchemeIs(caIssuersURL, "http://"):
+		rest = caIssuersURL[len("http://"):]
+	case aiaSchemeIs(caIssuersURL, "https://"):
+		rest = caIssuersURL[len("https://"):]
+	default:
+		return &aiaPolicyError{gate: "scheme"}
+	}
+
+	slash := strings.IndexByte(rest, '/')
+	host := rest
+	if slash >= 0 {
+		host = rest[:slash]
+	}
+	if len(host) == 0 || len(host) >= 256 {
+		return &aiaPolicyError{gate: "host shape"}
+	}
+
+	// the brackets of the v6 literal come off (the port rides behind the
+	// closing bracket); the bare host carries the port split: a single
+	// colon is the port separator, two or more are the unbracketed v6 —
+	// not the fetcher shape
+	if host[0] == '[' {
+		rb := strings.IndexByte(host, ']')
+		if rb < 0 {
+			return &aiaPolicyError{gate: "host shape"}
+		}
+		if rb+1 != len(host) && host[rb+1] != ':' {
+			return &aiaPolicyError{gate: "host shape"}
+		}
+		host = host[1:rb]
+	} else if colon := strings.LastIndexByte(host, ':'); colon >= 0 {
+		if strings.IndexByte(host, ':') != colon {
+			return &aiaPolicyError{gate: "host shape"}
+		}
+		host = host[:colon]
+	}
+
+	if _, ok := os.LookupEnv("SSH3_AIA_ALLOW_PRIVATE"); ok {
+		return nil
+	}
+
+	// the literals ride the range rules directly, the names walk the
+	// resolved answers (the rebinding covers both)
+	if ip := net.ParseIP(host); ip != nil {
+		if aiaAddrPrivate(ip) {
+			return &aiaPolicyError{gate: "private host", host: host}
+		}
+		return nil
+	}
+	addrs, err := aiaResolveIP(host)
+	if err != nil {
+		return &aiaPolicyError{gate: "resolve", host: host}
+	}
+	for _, ip := range addrs {
+		if aiaAddrPrivate(ip) {
+			return &aiaPolicyError{gate: "resolved private host", host: host}
+		}
+	}
+	return nil
+}
+
+// aiaSchemeIs folds the ASCII case of the scheme prefix (the C
+// s3_ssh3_aia_scheme_is).
+func aiaSchemeIs(caIssuersURL, scheme string) bool {
+	if len(caIssuersURL) < len(scheme) {
+		return false
+	}
+	for i := 0; i < len(scheme); i++ {
+		c := caIssuersURL[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != scheme[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// aiaZeroN reports whether every byte rides zero (the C
+// s3_ssh3_aia_zero_n).
+func aiaZeroN(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// aiaV4Private mirrors the C s3_ssh3_aia_v4_private matrix byte for byte:
+// the loopback, the this-net, the private, the carrier NAT, the link-local,
+// the broadcast, the multicast and the reserved top.
+func aiaV4Private(v4 uint32) bool {
+	if (v4>>24) == 127 || (v4>>24) == 0 || (v4>>24) == 10 ||
+		(v4&0xffc00000) == 0x64400000 || (v4&0xffff0000) == 0xa9fe0000 ||
+		(v4&0xfff00000) == 0xac100000 || (v4&0xffff0000) == 0xc0a80000 || (v4>>28) >= 0xe {
+		return true
+	}
+	return false
+}
+
+// aiaAddrPrivate mirrors the C s3_ssh3_aia_addr_private: the v4 and the
+// v4-mapped answers ride the v4 rules, the pure v6 rides the v6 matrix (the
+// unspecified, the loopback, the ULA, the link-local, the multicast), an
+// unknown shape rides the C unknown-family default (refuse).
+func aiaAddrPrivate(ip net.IP) bool {
+	if ip4 := ip.To4(); ip4 != nil {
+		return aiaV4Private(binary.BigEndian.Uint32(ip4))
+	}
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return true
+	}
+	if aiaZeroN(ip16) || (aiaZeroN(ip16[:15]) && ip16[15] == 1) {
+		return true
+	}
+	if ip16[0]&0xfe == 0xfc || (ip16[0] == 0xfe && ip16[1]&0xc0 == 0x80) || ip16[0] == 0xff {
+		return true
+	}
+	return false
+}
 
 // aiaCacheDir is the on-disk chase cache, riding next to the other client
 // state in the ssh3 directory (canon 2.6: the ~/.config path was folded into
@@ -100,9 +293,23 @@ func aiaParseResponse(body []byte) (*x509.Certificate, error) {
 
 // aiaHTTPFetch GETs a caIssuers URL with the per-fetch timeout (both schemes
 // ride, the fetched bytes carry no trust before the anchor gate — see the
-// file comment).
+// file comment). The fetch policy of the pass 5 review rides before the dial
+// (aiaURLAdmissible: the scheme allow-list, the control bytes, the private
+// targets — the C canon carries the same gate inside its default transport).
+// NOFOLLOW: the redirect valve returns http.ErrUseLastResponse, which hands
+// the 3xx answer itself back instead of walking it — the non-200 check below
+// then refuses every redirect shape on the spot (the C fetcher rides the
+// same no-follow contract).
 func aiaHTTPFetch(ctx context.Context, caIssuersURL string) ([]byte, error) {
-	client := &http.Client{Timeout: aiaFetchTimeout}
+	if err := aiaURLAdmissible(caIssuersURL); err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout: aiaFetchTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, caIssuersURL, nil)
 	if err != nil {
 		return nil, err
@@ -139,15 +346,63 @@ func newAIAChaser(anchors *x509.CertPool, ssh3Dir string) *aiaChaser {
 }
 
 // aiaCacheStore writes a fetched certificate into the cache; any problem
-// degrades to a debug line, the cache must never break a working chase.
+// degrades to a debug line, the cache must never break a working chase. A
+// fresh unique url bounds the directory first (the pass 5 entry cap); the
+// rewrite of an existing entry replaces its own file in place and never
+// evicts.
 func (c *aiaChaser) aiaCacheStore(caIssuersURL string, cert *x509.Certificate) {
 	if err := os.MkdirAll(c.cacheDir, 0700); err != nil {
 		log.Debug().Msgf("aia: could not create the cache directory %s: %s", c.cacheDir, err)
 		return
 	}
+	file := aiaCacheFilePath(c.cacheDir, caIssuersURL)
+	if _, err := os.Stat(file); err != nil {
+		c.aiaCacheEvict(maxAIACacheEntries - 1)
+	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
-	if err := os.WriteFile(aiaCacheFilePath(c.cacheDir, caIssuersURL), pemBytes, 0600); err != nil {
+	if err := os.WriteFile(file, pemBytes, 0600); err != nil {
 		log.Debug().Msgf("aia: could not cache %s: %s", caIssuersURL, err)
+	}
+}
+
+// aiaCacheEvict bounds the cache directory at maxAIACacheEntries .pem files:
+// when the entries pass the cap, the oldest-by-mtime ones go first, so the
+// fresh unique url — the most valuable entry, its owner just paid the network
+// round-trip — always lands. This is the deliberate divergence from the C
+// canon of the same review (commit b13d259): C counts the entries before the
+// write and simply skips the store on the full cache, which turns the cap
+// into a one-way door on a long-lived install (the first 64 urls ever seen
+// would own the directory forever); the evict keeps the directory at the cap
+// and the recency instead. A rewrite of an existing entry never reaches the
+// evict — it replaces its own file, the count does not grow.
+func (c *aiaChaser) aiaCacheEvict(keep int) {
+	entries, err := os.ReadDir(c.cacheDir)
+	if err != nil {
+		return
+	}
+	type cacheEntry struct {
+		name string
+		mod  time.Time
+	}
+	var pems []cacheEntry
+	for _, entry := range entries {
+		if path.Ext(entry.Name()) != ".pem" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		pems = append(pems, cacheEntry{entry.Name(), info.ModTime()})
+	}
+	if len(pems) <= keep {
+		return
+	}
+	sort.Slice(pems, func(i, j int) bool { return pems[i].mod.Before(pems[j].mod) })
+	for _, victim := range pems[:len(pems)-keep] {
+		if err := os.Remove(path.Join(c.cacheDir, victim.name)); err != nil {
+			log.Debug().Msgf("aia: could not evict the cache entry %s: %s", victim.name, err)
+		}
 	}
 }
 
@@ -186,7 +441,14 @@ func (c *aiaChaser) aiaFetchIssuer(ctx context.Context, child *x509.Certificate,
 
 		raw, err := c.fetch(ctx, caIssuersURL)
 		if err != nil {
-			log.Debug().Msgf("aia: could not fetch %s: %s", caIssuersURL, err)
+			var policyErr *aiaPolicyError
+			if errors.As(err, &policyErr) {
+				// the fetch policy refusal: the gate class and the host ride
+				// the log, the full url does not
+				log.Debug().Msgf("aia: the caIssuers url %s", err)
+			} else {
+				log.Debug().Msgf("aia: could not fetch %s: %s", caIssuersURL, err)
+			}
 			continue
 		}
 		cert, err := aiaParseResponse(raw)
