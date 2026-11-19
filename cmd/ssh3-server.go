@@ -42,6 +42,7 @@ import (
 	"github.com/francoismichel/ssh3/internal"
 	pprofutil "github.com/francoismichel/ssh3/internal/pprofutil"
 	ssh3Messages "github.com/francoismichel/ssh3/message"
+	"github.com/francoismichel/ssh3/park"
 	"github.com/francoismichel/ssh3/server_auth"
 	util "github.com/francoismichel/ssh3/util"
 	"github.com/francoismichel/ssh3/util/ttymodes"
@@ -118,6 +119,19 @@ type runningSession struct {
 	// the session loop waits for it on input EOF so the exit status wins the
 	// race against the deferred channel.Close()
 	exitStatusSent chan struct{}
+
+	// the parking of the session (SPEC §17, session_park.go): the identity,
+	// the sink and the lot record ride the session; mu guards the parking
+	// state across the session loop, the output pump and the lot sweeper
+	mu          sync.Mutex
+	ch          ssh3.Channel // the live output sink; nil before the spawn
+	user        string       // the authenticated user (the lot key)
+	token       string       // the x-ssh3-session-token of the conversation
+	parked      bool         // the sink is the lot ring, not the channel
+	childExited bool         // the pump delivered (or captured) the verdict
+	rec         *park.Record // the lot record while parked
+	attach      *park.Record // the pending re-attach binding of a fresh dial
+	attached    bool         // bound from the lot: shell/exec requests are no-ops
 }
 
 // var runningSessions = make(map[ssh3.Channel]*runningSession)
@@ -129,14 +143,22 @@ var runningSessions = util.NewSyncMap[ssh3.Channel, *runningSession]()
 // (P3-01): on a refusal the session goroutine, which owns the prune on
 // normal termination, never starts. spawn is the conversation's
 // budget-checked channel spawner; the seam keeps the insert/undo pairing
-// testable instead of buried in the accept loop (P4-03).
-func admitSessionChannel(sessions *util.SyncMap[ssh3.Channel, *runningSession], channels *budget, channel ssh3.Channel, spawn func(ssh3.Channel, func()) bool, run func()) bool {
-	sessions.Insert(channel, &runningSession{
+// testable instead of buried in the accept loop (P4-03). prefill runs on the
+// fresh session before the insert: the channel confirmation already rides
+// AcceptChannel, so the client's pty-req/shell/exec can outrun the session
+// goroutine — the parking identity (SPEC §17) must be on the session before
+// any request handler can read it.
+func admitSessionChannel(sessions *util.SyncMap[ssh3.Channel, *runningSession], channels *budget, channel ssh3.Channel, prefill func(*runningSession), spawn func(ssh3.Channel, func()) bool, run func()) bool {
+	session := &runningSession{
 		channelState:   LARVAL,
 		pty:            nil,
 		runningCmd:     nil,
 		exitStatusSent: make(chan struct{}),
-	})
+	}
+	if prefill != nil {
+		prefill(session)
+	}
+	sessions.Insert(channel, session)
 	if !spawn(channel, run) {
 		sessions.Delete(channel)
 		return false
@@ -330,6 +352,10 @@ func waitForRunningCommandAfterInputEOF(ctx context.Context, channel ssh3.Channe
 func execCmdInBackground(channel ssh3.Channel, user *unix_util.User, session *runningSession) error {
 	// closed on every return path of this function; see runningSession
 	defer close(session.exitStatusSent)
+	// the output pump writes through the session sink (session_park.go):
+	// the channel while attached, the lot ring while parked — the pump is
+	// the parked drain and survives the death of the channel
+	session.setChannel(channel)
 	runningCommand := session.runningCmd
 	openPty := session.pty
 	log.Debug().Msgf(
@@ -422,11 +448,17 @@ func execCmdInBackground(channel ssh3.Channel, user *unix_util.User, session *ru
 				} else {
 					buf, err := stdoutResult.data, stdoutResult.err
 					// an error could be returned but still with relevant data, so first send the data
-					_, err2 := channel.WriteData(buf, ssh3Messages.SSH_EXTENDED_DATA_NONE)
+					err2 := session.writeOutput(buf, ssh3Messages.SSH_EXTENDED_DATA_NONE)
 					if stdoutResult.raw != nil {
 						bufs.Put(stdoutResult.raw)
 					}
 					if err2 != nil {
+						// the sink died with the connection: park the live child
+						// instead of tearing it down — the ring owns the output
+						// until a re-attach or the expiry (SPEC §17.2)
+						if session.tryPark() {
+							continue
+						}
 						log.Error().Msgf("could not write the pty's output in an SSH message: %+v\n", err)
 						return
 					}
@@ -441,11 +473,15 @@ func execCmdInBackground(channel ssh3.Channel, user *unix_util.User, session *ru
 					stderrChan = nil
 				} else {
 					buf, err := stderrResult.data, stderrResult.err
-					_, err2 := channel.WriteData(buf, ssh3Messages.SSH_EXTENDED_DATA_STDERR)
+					err2 := session.writeOutput(buf, ssh3Messages.SSH_EXTENDED_DATA_STDERR)
 					if stderrResult.raw != nil {
 						bufs.Put(stderrResult.raw)
 					}
 					if err2 != nil {
+						// same park-or-teardown gate as the stdout sink
+						if session.tryPark() {
+							continue
+						}
 						log.Error().Msgf("could not write the pty's error output in an SSH message: %+v\n", err)
 						return
 					}
@@ -468,14 +504,7 @@ func execCmdInBackground(channel ssh3.Channel, user *unix_util.User, session *ru
 							// RFC 4254 section 6.10 exit-signal request
 							// instead of a 255 exit status
 							log.Debug().Msgf("sending exit-signal %s on channel %d", signalName, channel.ChannelID())
-							err := channel.SendRequest(&ssh3Messages.ChannelRequestMessage{
-								WantReply: false,
-								ChannelRequest: &ssh3Messages.ExitSignalRequest{
-									SignalNameWithoutSig: signalName,
-									CoreDumped:           coreDumped,
-								},
-							})
-							if err != nil {
+							if err := session.deliverVerdict(0, signalName, coreDumped); err != nil {
 								log.Error().Msgf("Could not send exit signal message to the peer: %s", err)
 							}
 							// both channels are closed, nothing else to do, return
@@ -485,11 +514,7 @@ func execCmdInBackground(channel ssh3.Channel, user *unix_util.User, session *ru
 					}
 				}
 				log.Debug().Msgf("sending exit-status %d on channel %d", execExitStatus, channel.ChannelID())
-				err := channel.SendRequest(&ssh3Messages.ChannelRequestMessage{
-					WantReply:      false,
-					ChannelRequest: &ssh3Messages.ExitStatusRequest{ExitStatus: execExitStatus},
-				})
-				if err != nil {
+				if err := session.deliverVerdict(execExitStatus, "", false); err != nil {
 					log.Error().Msgf("Could not send exit status message to the peer: %s", err)
 				}
 				// both channels are closed, nothing else to do, return
@@ -523,6 +548,14 @@ func newPtyReq(user *unix_util.User, channel ssh3.Channel, request ssh3Messages.
 	session, ok := runningSessions.Get(channel)
 	if !ok {
 		return fmt.Errorf("internal error: cannot find session for current channel")
+	}
+
+	// the re-attach of a parked session rides the pty request (SPEC §17.3):
+	// the ring replays, the geometry of the new console applies, the pump
+	// re-arms — the child keeps its shell state, nothing respawns
+	if session.attach != nil {
+		return reattachSession(channel, session, session.attach,
+			request.CharWidth, request.CharHeight, request.PixelWidth, request.PixelHeight)
 	}
 
 	if session.channelState != LARVAL {
@@ -570,6 +603,17 @@ func newCommand(user *unix_util.User, channel ssh3.Channel, loginShell bool, com
 	session, ok := runningSessions.Get(channel)
 	if !ok {
 		return fmt.Errorf("internal error: cannot find session for current channel")
+	}
+
+	// the exec-form re-attach (SPEC §17.3): the command of the parked
+	// session already runs, the fresh dial binds instead of spawning
+	if session.attach != nil {
+		return reattachSession(channel, session, session.attach, 0, 0, 0, 0)
+	}
+	// the attached session: the shell/exec request is a no-op success (the
+	// command already runs; a respawn would decline and hang the client)
+	if session.attached {
+		return nil
 	}
 
 	if session.channelState != LARVAL {
@@ -705,6 +749,18 @@ func sessionBanner(user *unix_util.User) string {
 }
 
 func newShellReq(user *unix_util.User, channel ssh3.Channel, wantReply bool) error {
+	if session, ok := runningSessions.Get(channel); ok {
+		// the re-attach without a pty request (the non-interactive dial of a
+		// tokenless-pty session): bind before the banner, no respawn
+		if session.attach != nil {
+			return reattachSession(channel, session, session.attach, 0, 0, 0, 0)
+		}
+		// the attached session: the shell lives, the request rides as a
+		// no-op success — no banner, no respawn (SPEC §17.3)
+		if session.attached {
+			return nil
+		}
+	}
 	// show system stats before the shell prompt (interactive sessions only,
 	// exec requests go through newCommand and are not polluted)
 	if _, err := channel.WriteData([]byte(sessionBanner(user)), ssh3Messages.SSH_EXTENDED_DATA_NONE); err != nil {
@@ -1333,6 +1389,15 @@ func ServerMain() int {
 			return err
 		}
 
+		// the parked-session lookup of the re-attach (SPEC §17.3): the fresh
+		// auth of the same user with the same token binds the attach; the
+		// token alone grants nothing (the auth verdict rode first) and an
+		// unknown token rides an ordinary fresh session
+		var attachCandidate *park.Record
+		if token := conv.SessionToken(); token != "" {
+			attachCandidate = globalParkLot.Find(authenticatedUsername, token, time.Now())
+		}
+
 		// S2-02: the channel accept loop used to be unbounded — every
 		// accepted channel became a goroutine (and, for sftp, a child
 		// process), so one account drove goroutine/process/heap growth by
@@ -1416,7 +1481,20 @@ func ServerMain() int {
 					continue
 				}
 				log.Debug().Msgf("accepted session channel %d of type %q", channel.ChannelID(), channel.ChannelType())
-				admitSessionChannel(&runningSessions, channels, channel, spawnChannel, func() {
+				// the re-attach binding rides the first session channel of the
+				// re-dial CONNECT (SPEC §17.3); a control-master conversation
+				// binds only its first session
+				attachRecord := attachCandidate
+				attachCandidate = nil
+				admitSessionChannel(&runningSessions, channels, channel, func(rs *runningSession) {
+					// the parking identity of this session (SPEC §17): set
+					// before the insert — the channel confirmation already
+					// rode AcceptChannel, so the client's first request can
+					// outrun the session goroutine
+					rs.user = authenticatedUsername
+					rs.token = conv.SessionToken()
+					rs.attach = attachRecord
+				}, spawnChannel, func() {
 					defer util.PanicGuard("cmd/ssh3-server.go:1197")()
 					// handle the main sessionChannel, once it ends, the whole conversation ends
 					// LIFO order matters: the channel (with its buffered exit-status
@@ -1445,8 +1523,12 @@ func ServerMain() int {
 						genericMessage, err := channel.NextMessage()
 						if errors.Is(err, net.ErrClosed) {
 							log.Debug().Msgf("the connection was closed by the application: %s", err)
+							// the connection died: the live child parks instead
+							// of tearing down (SPEC §17.2, session_park.go)
+							parkAfterDisconnect(channel)
 							return
 						} else if err != nil && !errors.Is(err, io.EOF) {
+							parkAfterDisconnect(channel)
 							log.Error().Msgf("error when getting message: %s", err)
 							return
 						}
@@ -1484,6 +1566,16 @@ func ServerMain() int {
 										// window supersedes it, and the flat 100ms is no
 										// longer paid on every one-shot exec (the client
 										// drains the channel until the FIN before exiting).
+									}
+									// the connection died while the child was still running
+									// (the wait above returned on the canceled context): the
+									// exec child parks instead of tearing down (SPEC §17.2).
+									// A child that finished on its own under a live
+									// connection rides the ordinary teardown — a half-close
+									// with a live connection must not park a session whose
+									// output still flows to the peer.
+									if !runningSession.childExited && conv.Context().Err() != nil {
+										runningSession.tryPark()
 									}
 								}
 							}
@@ -1557,11 +1649,35 @@ func ServerMain() int {
 		return -1
 	}
 
+	// the session parking lot (SPEC §17.2): SSH3_SESSION_PARK_SECONDS
+	// (default 300, 0 disables the parking) and SSH3_PARKED_MAX (default 16).
+	// The parking is not the shutdown drain: the drain is the graceful
+	// restart window, the lot is the survival of a dead connection's live
+	// children.
+	globalParkLot = newParkLotFromEnv()
+
 	// graceful shutdown (stage 3): SIGTERM/SIGINT stop accepting new
 	// connections, then active connections drain up to SSH3_SHUTDOWN_DRAIN
 	// seconds (default 5, 0 closes them immediately) before being terminated
 	serveCtx, stopServe := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopServe()
+
+	if globalParkLot.Enabled() {
+		// the lazy expiry backstop: the lot sweeps on every Add/Find, the
+		// ticker covers a lot nobody touches (the kill+reap of the expired)
+		go func() {
+			ticker := time.NewTicker(parkSweepInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-serveCtx.Done():
+					return
+				case <-ticker.C:
+					globalParkLot.Sweep(time.Now())
+				}
+			}
+		}()
+	}
 
 	var conns sync.WaitGroup
 	var connsMu sync.Mutex
@@ -1631,6 +1747,9 @@ func ServerMain() int {
 			log.Info().Msgf("shutdown: drain timeout, closing %d remaining connections", remaining)
 		}
 	}
+	// the parked children die with the daemon (the teardown sweep, SPEC
+	// §17.2): a parked session survives a dead connection, not the process
+	globalParkLot.Teardown()
 	log.Info().Msgf("shutdown complete")
 	return 0
 }

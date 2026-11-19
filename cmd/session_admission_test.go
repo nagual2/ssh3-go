@@ -35,7 +35,7 @@ func TestAdmitSessionChannelRefusalPrunesRunningSessions(t *testing.T) {
 	stub := &stubSFTPChannel{}
 	run := func() { t.Error("the session goroutine must not start on a budget refusal") }
 
-	admitted := admitSessionChannel(&sessions, channels, stub, spawn, run)
+	admitted := admitSessionChannel(&sessions, channels, stub, nil, spawn, run)
 
 	if admitted {
 		t.Fatal("admission succeeded despite the exhausted budget")
@@ -67,7 +67,7 @@ func TestAdmitSessionChannelAdmitsAndRegisters(t *testing.T) {
 	}
 	stub := &stubSFTPChannel{}
 
-	admitted := admitSessionChannel(&sessions, channels, stub, spawn, func() { close(runStarted) })
+	admitted := admitSessionChannel(&sessions, channels, stub, nil, spawn, func() { close(runStarted) })
 
 	if !admitted {
 		t.Fatal("admission refused despite a free budget slot")

@@ -412,6 +412,14 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 	}
 	req.Proto = "ssh3"
 
+	// the session token rides every 1-RTT CONNECT (SPEC §17.1): the lot key
+	// of the server-side parking. The 0-RTT early flight above does not
+	// carry it (the anti-replay canon: the token is only meaningful behind
+	// the auth verdict) — this request is built after HandshakeComplete.
+	if token := SessionToken(); token != "" {
+		req.Header.Set("x-ssh3-session-token", token)
+	}
+
 	// TODO: replace this by a loop actually performing the requests for qeach auth method of each plugin
 	foundSuitableAuthPlugin := false
 	plugins := internal.GetClientAuthPlugins()

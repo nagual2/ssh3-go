@@ -295,6 +295,12 @@ func (s *Server) GetHTTPHandlerFunc(ctx context.Context) AuthenticatedHandlerFun
 			conversationsManager := s.getOrCreateConversationsManager(qconn)
 			conversationsManager.addConversation(newConv)
 
+			// the session token rides every 1-RTT CONNECT (SPEC §17.1):
+			// captured here, the parking-lot lookup rides the conversation
+			// handler. The 0-RTT early flight never reaches this handler —
+			// the auth gate refuses it before the verdict.
+			newConv.SetSessionToken(r.Header.Get("x-ssh3-session-token"))
+
 			// a control master shares the conversation across slave
 			// sessions (stage 3.5): mark it so the per-session teardown
 			// in the session handler does not kill the shared connection

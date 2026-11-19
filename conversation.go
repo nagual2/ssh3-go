@@ -53,7 +53,8 @@ type Conversation struct {
 
 	channelsAcceptQueue *util.AcceptQueue[Channel]
 
-	multiplexed atomic.Bool // set by a control master's CONNECT (stage 3.5)
+	multiplexed  atomic.Bool // set by a control master's CONNECT (stage 3.5)
+	sessionToken string      // the x-ssh3-session-token of the CONNECT (SPEC §17.1)
 }
 
 // compressAlgorithm returns the codec of the compressed data frames of
@@ -650,4 +651,26 @@ func (c *Conversation) ConversationID() ConversationID {
 // Server header (zero value before the conversation established).
 func (c *Conversation) PeerVersion() Version {
 	return c.peerVersion
+}
+
+// maxSessionTokenLen caps the x-ssh3-session-token header value: the token
+// rides as an opaque parking-lot key (SPEC §17.1), and an oversized header
+// must not turn into unbounded server state.
+const maxSessionTokenLen = 64
+
+// SessionToken returns the x-ssh3-session-token header value of the CONNECT
+// request that established this conversation (SPEC §17.1); an empty string
+// when the client sent none (an old client, a tokenless dial).
+func (c *Conversation) SessionToken() string {
+	return c.sessionToken
+}
+
+// SetSessionToken records the session token of the CONNECT request. The
+// server captures it after the auth verdict: the token is only meaningful
+// behind a fresh authentication (the 0-RTT early flight never carries it).
+func (c *Conversation) SetSessionToken(token string) {
+	if len(token) > maxSessionTokenLen {
+		token = token[:maxSessionTokenLen]
+	}
+	c.sessionToken = token
 }
