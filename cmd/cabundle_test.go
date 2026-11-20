@@ -262,7 +262,7 @@ func TestLoadClientCAPoolReadsBundleFile(t *testing.T) {
 		t.Fatalf("could not write the bundle file: %s", err)
 	}
 
-	pool := loadClientCAPool(dir)
+	pool := loadClientCAPool(dir, defaultTrustPolicy)
 	if pool == nil {
 		t.Fatal("loadClientCAPool returned no pool")
 	}
@@ -276,14 +276,14 @@ func TestLoadClientCAPoolReadsBundleFile(t *testing.T) {
 func TestLoadClientCAPoolToleratesMissingAndGarbageBundleFile(t *testing.T) {
 	dir := t.TempDir()
 
-	if pool := loadClientCAPool(dir); pool == nil {
+	if pool := loadClientCAPool(dir, defaultTrustPolicy); pool == nil {
 		t.Fatal("loadClientCAPool returned no pool with no bundle file")
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "ca-bundle.pem"), []byte("garbage, no pem"), 0600); err != nil {
 		t.Fatalf("could not write the garbage bundle file: %s", err)
 	}
-	if pool := loadClientCAPool(dir); pool == nil {
+	if pool := loadClientCAPool(dir, defaultTrustPolicy); pool == nil {
 		t.Fatal("loadClientCAPool returned no pool with a garbage bundle file")
 	}
 
@@ -293,7 +293,7 @@ func TestLoadClientCAPoolToleratesMissingAndGarbageBundleFile(t *testing.T) {
 		t.Fatalf("could not write the override bundle file: %s", err)
 	}
 	t.Setenv("SSH3_CA_BUNDLE", override)
-	if pool := loadClientCAPool(dir); pool == nil {
+	if pool := loadClientCAPool(dir, defaultTrustPolicy); pool == nil {
 		t.Fatal("loadClientCAPool returned no pool with a garbage override file")
 	}
 }

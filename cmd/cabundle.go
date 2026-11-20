@@ -4,10 +4,10 @@ package cmd
 // the "system CA store" path): the Go client builds its chain from the
 // static content of the system stores, so a Windows Server SKU with a
 // truncated store (no ISRG Root X1/X2) fails to verify Let's Encrypt chains
-// and the client demanded -insecure. The trust pool therefore merges four
-// sources:
+// and the client demanded -insecure. The trust pool merges these sources:
 //
-//   - the system certificate store (the anchor the client already had),
+//   - the system certificate store (under the R14-6 policy only the
+//     system policy carries it — truststore.go),
 //   - the embedded ISRG roots, byte-exact as published on
 //     https://letsencrypt.org/certs/ (publicly known roots: legitimate
 //     anchors under the canon — the embedded trust does not anchor itself,
@@ -18,10 +18,12 @@ package cmd
 //     collected from observed chains whose hash the signature-verified
 //     Microsoft CTL vouches for (see rootprogram.go).
 //
-// The merged pool is a strict superset of the old system-only pool, so the
-// default behaviour only ever adds trust. A missing or broken user file and
-// an unavailable system store degrade to warnings, never to a refusal to
-// run: the remaining sources keep carrying the trust.
+// Since R14-6 the composition rides the trust policy (truststore.go):
+// the own policy keeps the platform store out, the system policy rides
+// it over the own set — the union is never worse than the system store
+// alone. A missing or broken user file and an unavailable system store
+// degrade to warnings, never to a refusal to run: the remaining sources
+// keep carrying the trust.
 
 import (
 	"bytes"
@@ -119,30 +121,7 @@ func buildClientCAPool(systemPool *x509.CertPool, systemErr error, bundles ...[]
 	return pool
 }
 
-// loadClientCAPool gathers the trust inputs of the client — the system
-// store, the embedded ISRG roots and the optional user bundle — and merges
-// them. It never fails: every missing source degrades to the remaining ones
-// with a warning.
-func loadClientCAPool(ssh3Dir string) *x509.CertPool {
-	systemPool, systemErr := x509.SystemCertPool()
-	pool := buildClientCAPool(systemPool, systemErr, isrgRootX1PEM, isrgRootX2PEM)
-
-	bundlePath := caBundleFilePath(ssh3Dir)
-	filePEM, err := os.ReadFile(bundlePath)
-	switch {
-	case err == nil:
-		appendPEMToPool(pool, filePEM, bundlePath)
-	case os.IsNotExist(err):
-		// the optional bundle file is absent: the system store and the
-		// embedded roots carry the trust alone
-	default:
-		log.Warn().Msgf("ca-bundle: could not read %s: %s", bundlePath, err)
-	}
-
-	// R7-T3 (the Windows root program): the CTL-blessed roots collected from
-	// observed chains ride as the fourth source, gated by the signature of
-	// the cached verdict (see rootprogram.go). The same load initializes the
-	// process-wide state the refresh goroutine and the dial-path gates use.
-	rootProgramDefault.load(ssh3Dir, pool)
-	return pool
-}
+// loadClientCAPool moved to truststore.go with the R14-6 trust policy:
+// the pool builder rides the own|system policy over the same merge
+// primitive (buildClientCAPool), the embedded set grew the 109-root
+// CCADB browser set and the user bundles grew the trust-bundle overlay.

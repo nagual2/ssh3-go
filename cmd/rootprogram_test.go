@@ -1069,13 +1069,13 @@ func TestLoadClientCAPoolWithRootProgramCache(t *testing.T) {
 		t.Fatalf("could not write the collected anchors: %s", err)
 	}
 
-	pool := loadClientCAPool(dir)
+	pool := loadClientCAPool(dir, defaultTrustPolicy)
 	if !chainVerifies(pool, intermediate, leaf, "wiring.example.org") {
 		t.Fatal("the collected anchor must ride the production pool")
 	}
 
 	t.Setenv(rootProgramDisableEnvVar, "1")
-	pool2 := loadClientCAPool(dir)
+	pool2 := loadClientCAPool(dir, defaultTrustPolicy)
 	if chainVerifies(pool2, intermediate, leaf, "wiring.example.org") {
 		t.Fatal("SSH3_NO_ROOT_PROGRAM=1 must remove the fourth source")
 	}

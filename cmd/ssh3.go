@@ -920,6 +920,8 @@ func ClientMain() int {
 		"StrictHostKeyChecking policy: yes, accept-new, no or ask (default: ask; overrides -o and ~/.ssh/config)")
 	optionOverrides := cliOptionFlags{}
 	flag.Var(&optionOverrides, "o", "configuration option as Key=Value, e.g. -o StrictHostKeyChecking=accept-new (can be repeated)")
+	var trustStoreFlagValue trustStoreFlag
+	flag.Var(&trustStoreFlagValue, "trust-store", "the anchor set of the dial: own (the default, the embedded roots plus the user bundles) or system (adds the platform certificate store) (the -o TrustStore twin; the ssh3-c --trust-store)")
 	issuerUrl := flag.String("use-oidc", "", "if set, force the use of OpenID Connect with the specified issuer url as parameter (it opens a browser window)")
 	oidcConfigFileName := flag.String("oidc-config", "", "OpenID Connect json config file containing the \"client_id\" and \"client_secret\" fields needed for most identity providers")
 	verbose := flag.Bool("v", false, "if set, enable verbose mode")
@@ -1117,8 +1119,10 @@ func ClientMain() int {
 	controlMasterOption := ""
 	controlPathOption := ""
 	controlPersistOption := ""
-	connectTimeoutOption := 0        // the -o ConnectTimeout=... value in seconds (armed with connectTimeoutOptionSet)
-	connectTimeoutOptionSet := false // an explicit -o ConnectTimeout was given, so "0" (deadline off) is not "unset"
+	connectTimeoutOption := 0              // the -o ConnectTimeout=... value in seconds (armed with connectTimeoutOptionSet)
+	connectTimeoutOptionSet := false       // an explicit -o ConnectTimeout was given, so "0" (deadline off) is not "unset"
+	trustStoreOption := defaultTrustPolicy // the -o TrustStore=... value
+	trustStoreOptionSet := false           // an explicit -o TrustStore was given
 	parsersByKeyword := optionParsersByKeyword(cliParsers)
 	for _, keyValuePair := range optionOverrides {
 		key, value, _ := strings.Cut(keyValuePair, "=")
@@ -1242,6 +1246,17 @@ func ClientMain() int {
 			}
 			connectTimeoutOption = seconds
 			connectTimeoutOptionSet = true
+			continue
+		case strings.EqualFold(key, "TrustStore"):
+			// the anchor-set policy of the dial (R14-6, the ssh3-c canon
+			// ee30795): the bad value stops the run before any dial
+			policy, err := ParseTrustPolicy(value)
+			if err != nil {
+				log.Error().Msgf("-o TrustStore= wants own|system (%s)", err)
+				return -1
+			}
+			trustStoreOption = policy
+			trustStoreOptionSet = true
 			continue
 		}
 		if optionName, ok := parsersByKeyword[strings.ToLower(key)]; ok {
@@ -1690,12 +1705,33 @@ func ClientMain() int {
 
 	ctx := context.Background()
 
-	// the trust pool of the client (R7-T1 CA-bundle bootstrap): the system
-	// store merged with the embedded ISRG roots, the optional user
-	// bundle and the R7-T3 Windows root program cache, so a Windows Server
-	// SKU with a truncated store keeps verifying Let's Encrypt chains
-	// without -insecure
-	pool := loadClientCAPool(ssh3Dir)
+	// the trust policy of the dial (R14-6, the ssh3-c canon ee30795):
+	// the config keyword rides the ssh2 tolerance (an unparsable value
+	// stays the default silently), the -o override beat it and the
+	// --trust-store flag beat both; the default is own (the phase-1
+	// owner decision of the canon)
+	trustPolicy := defaultTrustPolicy
+	if sshConfig != nil {
+		if v, err := sshConfig.Get(parsedUrl.Hostname(), "TrustStore"); err == nil && v != "" {
+			if policy, policyErr := ParseTrustPolicy(v); policyErr == nil {
+				trustPolicy = policy
+			}
+		}
+	}
+	if trustStoreOptionSet {
+		trustPolicy = trustStoreOption
+	}
+	if trustStoreFlagValue.set {
+		trustPolicy = trustStoreFlagValue.policy
+	}
+
+	// the trust pool of the dial (R7-T1 CA-bundle bootstrap under the
+	// R14-6 policy): the own policy rides the embedded set (the ISRG
+	// pair plus the 109-root CCADB browser set) with the user bundles
+	// and the trust-bundle overlay; the system policy adds the platform
+	// store over the own set — the union is never worse than the system
+	// store alone
+	pool := loadClientCAPool(ssh3Dir, trustPolicy)
 
 	// the client certificate pair (the phase 3, the ssh3-c canon
 	// e3477ef): the pair loads and matches here — the refusal happens

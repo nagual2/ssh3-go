@@ -1,0 +1,10 @@
+{
+  "source_url": "https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV",
+  "report_snapshot": "ccadb-2026-11-12.csv",
+  "report_sha256": "8349576e273216fe4d591473f13545e45ec46422818052718c37548668b0ec26",
+  "roots": 109,
+  "report_rows": 167,
+  "dropped_no_websites": 55,
+  "dropped_distrust": 3,
+  "pem_bytes": 161154
+}

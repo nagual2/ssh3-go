@@ -93,10 +93,28 @@ by hop
 .It Fl o Ar keyword=value
 Configuration option, repeatable: Cm Port, User, IdentityFile,
 LocalForward, RemoteForward, DynamicForward, ProxyJump,
-ControlMaster, ControlPath, ControlPersist, StrictHostKeyChecking
+ControlMaster, ControlPath, ControlPersist, StrictHostKeyChecking,
+TrustStore
 and the other
 .Xr ssh_config 5
 keywords the fork implements.
+.It Fl -trust-store Ar own|system
+The anchor set of the dial (the
+.Fl o Cm TrustStore
+twin, the config key
+.Cm TrustStore
+rides too).
+.Cm own
+.Pq the default
+carries the embedded root certificates of the build (the ISRG pair
+plus the 109-root Mozilla CCADB set) plus the user bundles
+.Pq ~/.ssh3/trust-bundle.pem , the Ev SSH3_CA_BUNDLE or ~/.ssh3/ca-bundle.pem file .
+.Cm system
+adds the platform certificate store over the own set \- the union
+is never worse than the system store alone; an unavailable store
+rides the own set with a warning.
+The host pins of known_hosts ride the verdict machinery whatever the
+policy is.
 .It Fl M , Fl S Ar ctl_path
 Control master mode and its unix socket path (share one connection
 across invocations).
@@ -148,6 +166,38 @@ and the master idle timeout.
 Deprecated aliases
 .Pq the pre-parity fork forms: Fl -privkey , Fl -proxy-jump , Fl -forward-agent , Fl -forward-tcp , Fl -forward-udp , Fl -P , Fl U
 stay accepted.
+.Sh SSH3-CERT
+The PKI utility
+.Pa /usr/bin/ssh3-cert
+carries the one-shot operations of the certificate life outside the
+resident processes:
+.Bl -tag -width Ds
+.It Li ssh3-cert trust-update Op Fl -trust-update-url Ar url
+Fetch the trust bundle, validate it (every PEM block a certificate,
+the count floor) and land it atomically as
+.Pa ~/.ssh3/trust-bundle.pem
+\- the manifest next to it names the source and the SHA-256; the
+previous copy stays on any failure (the offline scheduler run is the
+plain shape). The default source is
+.Li https://curl.se/ca/cacert.pem ,
+the Mozilla set of the curl distribution. Exit 0 lands a fresh
+bundle, 255 keeps the stale one.
+.It Li ssh3-cert ticket-key Ar file
+Generate a session ticket key file (the nginx 80-byte form the
+server reads: 16 name + 32 hmac + 32 aes, 0600) \- the pre-seeded
+key survives the first daemon lifetime.
+.El
+.Pp
+The daily ride is the systemd user timer the client package ships:
+the
+.Pa ssh3-trust-update.service
++
+.Pa ssh3-trust-update.timer
+pair lands in
+.Pa usr/lib/systemd/user ,
+the enable stays the owner's step
+.Pq Li systemctl --user enable --now ssh3-trust-update.timer .
+The Windows twin is a schtasks one-liner of the same command.
 .Sh ENVIRONMENT
 .Bl -tag -width Ds
 .It Ev SSH3_LOG_LEVEL
@@ -155,11 +205,17 @@ The diagnostic log level
 .Pq debug | info | warn | error .
 .It Ev SSH3_PPROF
 If set, serve the Go pprof endpoint.
+.It Ev SSH3_CA_BUNDLE
+The user bundle file overriding the default
+.Pa ~/.ssh3/ca-bundle.pem .
 .El
 .Sh FILES
 .Bl -tag -width Ds
 .It Pa ~/.ssh3/known_hosts
 The TOFU pin store of the server certificates.
+.It Pa ~/.ssh3/trust-bundle.pem
+The trust-bundle overlay the daily update lands; the own policy
+anchors it on every dial.
 .It Pa ~/.ssh/config
 The OpenSSH configuration, consulted for the implemented keywords.
 .El

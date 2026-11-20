@@ -29,6 +29,7 @@ override_dh_auto_configure:
 
 override_dh_auto_build:
 	go build -mod=vendor -trimpath -buildmode=pie -o debian/build/ssh3 ./cmd/ssh3
+	go build -mod=vendor -trimpath -buildmode=pie -o debian/build/ssh3-cert ./cmd/ssh3-cert
 	go build -mod=vendor -trimpath -buildmode=pie -o debian/build/ssh3-server ./cmd/ssh3-server
 
 # the upstream ginkgo suite runs in the project CI, not wired into

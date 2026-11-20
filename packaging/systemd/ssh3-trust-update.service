@@ -1,0 +1,7 @@
+[Unit]
+Description=ssh3 client trust bundle update
+Documentation=man:ssh3(1)
+
+[Service]
+Type=oneshot
+ExecStart=ssh3-cert trust-update

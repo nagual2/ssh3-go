@@ -1,1 +1,4 @@
 debian/build/ssh3 usr/bin/
+debian/build/ssh3-cert usr/bin/
+packaging/systemd/ssh3-trust-update.service usr/lib/systemd/user/
+packaging/systemd/ssh3-trust-update.timer usr/lib/systemd/user/
