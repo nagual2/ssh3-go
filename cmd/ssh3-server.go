@@ -41,6 +41,7 @@ import (
 	ssh3 "github.com/francoismichel/ssh3"
 	"github.com/francoismichel/ssh3/internal"
 	pprofutil "github.com/francoismichel/ssh3/internal/pprofutil"
+	"github.com/francoismichel/ssh3/internal/ticketkey"
 	ssh3Messages "github.com/francoismichel/ssh3/message"
 	"github.com/francoismichel/ssh3/park"
 	"github.com/francoismichel/ssh3/server_auth"
@@ -1029,6 +1030,17 @@ func ServerMain() int {
 	certAlias := flag.String("c", "", "host certificate file (sshd -c; same as -cert)")
 	keyAlias := flag.String("h", "", "host key file (sshd -h; same as -key)")
 	serverPort := flag.Int("p", 0, "port to listen on (sshd -p; overrides the -bind port, the bind address stays -bind)")
+	// the persistent session ticket key (R14-4, the ssh3-c wave-13 canon
+	// 26f23eb): the tickets issued in one daemon lifetime keep decrypting
+	// after the restart (the warm 0-RTT reconnect of the client whose session
+	// cache outlives the daemon). The default rides the private key directory
+	// (the same secret store); SSH3_TICKET_KEY_FILE fills the flag default,
+	// the flag wins.
+	ticketKeyFile := os.Getenv("SSH3_TICKET_KEY_FILE")
+	flag.StringVar(&ticketKeyFile, "session-ticket-key-file", ticketKeyFile, "the persistent session ticket key file "+
+		"(the nginx 80-byte form: 16 name + 32 hmac + 32 aes; the 48-byte legacy rides); "+
+		"default rides the private key directory (SSH3_TICKET_KEY_FILE sets it too); "+
+		"the missing file generates (0600), the issued tickets survive the restart")
 	var autogenCertificates autogenCertificates
 	flag.Var(&autogenCertificates, "generate-public-cert", "Automatically produce and use a valid public certificate using"+
 		"Let's Encrypt for the provided domain name. The flag can be used several times to generate several certificates."+
@@ -1348,6 +1360,19 @@ func ServerMain() int {
 		tlsConfig.Certificates = append(tlsConfig.Certificates, certificate)
 	}
 
+	// the persistent session ticket keys (R14-4, the ssh3-c wave-13 canon
+	// 26f23eb): the daemon arms the nginx-form key file — the missing file
+	// generates (0600), the broken one regenerates, the issued tickets
+	// survive the restart (the warm 0-RTT reconnect). A failed path keeps
+	// the daemon alive on the ephemeral in-process keys behind the warning
+	// (the pre-wave-13 shape); the rotation watcher starts with the serve
+	// context below.
+	ticketKeyPath := ticketKeyFile
+	if ticketKeyPath == "" {
+		ticketKeyPath = ticketkey.DefaultPath(*keyPath)
+	}
+	ticketMgr := ticketkey.Setup(tlsConfig, ticketKeyPath)
+
 	log.Debug().Msgf("version %s", ssh3.GetCurrentSoftwareVersion())
 
 	quicConf := &quic.Config{
@@ -1661,6 +1686,13 @@ func ServerMain() int {
 	// seconds (default 5, 0 closes them immediately) before being terminated
 	serveCtx, stopServe := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopServe()
+
+	// the key-file mtime poll of the ticket rotation (R14-4): the fresh key
+	// seals first, the armed tail keeps the in-flight tickets decryptable;
+	// the poll stops with the shutdown context
+	if ticketMgr != nil {
+		ticketMgr.Run(serveCtx, ticketkey.DefaultPollInterval)
+	}
 
 	if globalParkLot.Enabled() {
 		// the lazy expiry backstop: the lot sweeps on every Add/Find, the
