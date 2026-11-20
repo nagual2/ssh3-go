@@ -149,7 +149,7 @@ func reportSetupTimeout(setupCtx context.Context, seconds int) bool {
 
 func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog io.Writer, ssh3Dir string, certPool *x509.CertPool, knownHostsPath string, knownHosts ssh3.KnownHosts,
 	strictHostKeyChecking ssh3.StrictHostKeyChecking, verifyHostKeyDNS verifyHostKeyDNSSetting,
-	oidcConfig []*oidc.OIDCConfig, options *client_config.Config, proxyRemoteAddr *net.UDPAddr, tty *os.File, tuning quicTuning, addressFamily int) (*quic.Conn, int) {
+	oidcConfig []*oidc.OIDCConfig, options *client_config.Config, proxyRemoteAddr *net.UDPAddr, tty *os.File, tuning quicTuning, addressFamily int, clientCert *tls.Certificate) (*quic.Conn, int) {
 
 	var err error
 	remoteAddr := proxyRemoteAddr
@@ -214,6 +214,22 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 		// Go standard library exports no serialization of
 		// tls.ClientSessionState)
 		ClientSessionCache: client.GetTicketCache(),
+	}
+
+	// the client certificate rides the handshake of every dial of the
+	// process (the destination, the jump hops and the reconnect
+	// re-dials): the server's CertificateRequest carries it (the phase
+	// 3, the ssh3-c canon e3477ef). The pair rides the
+	// GetClientCertificate callback, not the Certificates field: the
+	// field filters by the acceptable cas of the request and an
+	// unknown issuer would ride an empty certificate (the
+	// certificate_required alert kills the handshake) — the C canon
+	// sends the pair whatever the ca names say and the ssh3 verdict
+	// layer owns the trust decision (the record-only shape)
+	if clientCert != nil {
+		tlsConf.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return clientCert, nil
+		}
 	}
 
 	// the cache routes the tls callbacks through the noted dial (the
@@ -924,6 +940,12 @@ func ClientMain() int {
 	masterMode := flag.Bool("M", false, "control master mode (ssh2 -M; same as -control-master yes)")
 	controlSocket := flag.String("S", "", "control master unix socket path (ssh2 -S; same as -control-path)")
 	identityFile := flag.String("i", "", "selects the private key file for public key authentication (ssh2 -i; same as -privkey)")
+	// the client certificates (the phase 3, the ssh3-c canon e3477ef):
+	// the pair rides the server's CertificateRequest on every dial of
+	// the process (the destination, the jump hops and the reconnect
+	// re-dials share the same tls.Config)
+	certFile := flag.String("cert", "", "the client certificate pem of the mTLS: the pair rides the server's CertificateRequest (--cert and --key ride together; the ssh3-c --cert)")
+	certKeyFile := flag.String("key", "", "the client certificate private key pem (rides --cert; the ssh3-c --key)")
 	clientPort := flag.Int("p", 0, "port to connect to on the remote host (ssh2 -p; overrides -o Port, the operand port and ~/.ssh/config)")
 	packetSize := flag.Int("packet-size", 1200, "initial QUIC packet size in bytes (the QUIC minimum; "+
 		"the path MTU discovery grows it when the path allows)")
@@ -1674,6 +1696,15 @@ func ClientMain() int {
 	// SKU with a truncated store keeps verifying Let's Encrypt chains
 	// without -insecure
 	pool := loadClientCAPool(ssh3Dir)
+
+	// the client certificate pair (the phase 3, the ssh3-c canon
+	// e3477ef): the pair loads and matches here — the refusal happens
+	// at the wiring, not mid-handshake (the check_private_key canon)
+	clientCert, err := loadClientCertPair(*certFile, *certKeyFile)
+	if err != nil {
+		log.Error().Msgf("%s", err)
+		return -1
+	}
 	// R7-T3: the background refresh of the CTL cabinets rides off the dial
 	// path entirely — a fresh cache means zero requests, and the refreshed
 	// verdicts reach the current process's gates and the next start's pool
@@ -1872,7 +1903,7 @@ func ClientMain() int {
 			// this process is the detached master: connect and serve the
 			// control socket; it never runs sessions itself
 			idleTimeout, _ := parseControlPersist(controlPersistResolved)
-			qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, nil, nil, tuning, addressFamily)
+			qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, nil, nil, tuning, addressFamily, clientCert)
 			if qconn == nil {
 				if status != 0 && !reportSetupTimeout(setupCtx, connectTimeout) {
 					log.Error().Msgf("could not setup transport for the control master")
@@ -1880,7 +1911,11 @@ func ClientMain() int {
 				return status
 			}
 			transport := &http3.Transport{}
-			c, err := client.Dial(setupCtx, options, qconn, transport, nil, client.WithMultiplexed(), client.WithCompressAnnounce(compressAnnounce))
+			dialOpts := []client.DialOption{client.WithMultiplexed(), client.WithCompressAnnounce(compressAnnounce)}
+			if clientCert != nil {
+				dialOpts = append(dialOpts, client.WithClientCertAuth())
+			}
+			c, err := client.Dial(setupCtx, options, qconn, transport, nil, dialOpts...)
 			if err != nil {
 				if !reportSetupTimeout(setupCtx, connectTimeout) {
 					log.Error().Msgf("the control master could not establish its connection: %s", err)
@@ -1980,7 +2015,7 @@ func ClientMain() int {
 				return -1
 			}
 			hopTuning.InitialPacketSize = hopPacketSize
-			qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, proxyAddress, tty, hopTuning, addressFamily)
+			qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, proxyOptions, proxyAddress, tty, hopTuning, addressFamily, clientCert)
 
 			if qconn == nil {
 				if status != 0 {
@@ -1996,7 +2031,11 @@ func ClientMain() int {
 			// datagrams on the same connection
 			transport := &http3.Transport{}
 
-			proxyClient, err := client.Dial(setupCtx, proxyOptions, qconn, transport, proxyAgentClient, client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly())
+			proxyDialOpts := []client.DialOption{client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly()}
+			if clientCert != nil {
+				proxyDialOpts = append(proxyDialOpts, client.WithClientCertAuth())
+			}
+			proxyClient, err := client.Dial(setupCtx, proxyOptions, qconn, transport, proxyAgentClient, proxyDialOpts...)
 			if err != nil {
 				if !reportSetupTimeout(setupCtx, connectTimeout) {
 					log.Error().Msgf("could not establish SSH3 proxy conversation: %s", err)
@@ -2199,7 +2238,7 @@ func ClientMain() int {
 			dialCtx, cancelDial = context.WithTimeout(ctx, time.Duration(connectTimeout)*time.Second)
 		}
 
-		qconn, status := setupQUICConnection(dialCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, destinationTuning, addressFamily)
+		qconn, status := setupQUICConnection(dialCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, destinationTuning, addressFamily, clientCert)
 
 		if qconn == nil {
 			cancelDial()
@@ -2244,7 +2283,11 @@ func ClientMain() int {
 		// the same connection
 		transport := &http3.Transport{}
 
-		c, err := client.Dial(dialCtx, options, qconn, transport, agentClient, client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly())
+		destinationDialOpts := []client.DialOption{client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly()}
+		if clientCert != nil {
+			destinationDialOpts = append(destinationDialOpts, client.WithClientCertAuth())
+		}
+		c, err := client.Dial(dialCtx, options, qconn, transport, agentClient, destinationDialOpts...)
 		if err != nil {
 			if !reportSetupTimeout(dialCtx, connectTimeout) {
 				log.Error().Msgf("could not dial %s: %s", options.CanonicalHostFormat(), err)

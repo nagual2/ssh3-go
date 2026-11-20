@@ -15,7 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacketSize uint64, handlerFunc ssh3.AuthenticatedHandlerFunc) (http.HandlerFunc, error) {
+func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacketSize uint64, handlerFunc ssh3.AuthenticatedHandlerFunc, clientCert *ClientCertConfig) (http.HandlerFunc, error) {
 	if runtime.GOOS != "linux" && enablePasswordLogin {
 		return nil, fmt.Errorf("password login not supported on %s/%s systems", runtime.GOOS, runtime.GOARCH)
 	}
@@ -73,6 +73,62 @@ func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacket
 		}
 		defer ReleaseUnauthenticatedConversation()
 
+		// the takeover and the conversation creation run only on the
+		// positive verdict.  The conversation context must derive from
+		// the QUIC connection's: when the connection dies without an
+		// application-level close (client crash, network loss), the
+		// conversation handler blocked in AcceptChannel has to wake up
+		// and release the conversation's external resources
+		// (reverse-forwarding binds, forwarded agent sockets).  A
+		// conversation-create failure after the headers flushed is
+		// internal and leaves the stream to the teardown.
+		serveConversation := func(username string) {
+			str := w.(http3.HTTPStreamer).HTTPStream()
+			conv, err := ssh3.NewServerConversation(qconn.Context(), str, qconn, qconn, defaultMaxPacketSize, peerVersion)
+			if err != nil {
+				log.Error().Msgf("could not create new server conversation")
+				return
+			}
+			handlerFunc(username, conv, w, r)
+		}
+
+		// the client certificate verdict (the phase 3, the ssh3-c canon
+		// e3477ef): the first step of the auth chain when the ca file
+		// arms the policy — the presented chain verifies against the
+		// anchors (the record-only shape: the handshake never dies from
+		// the verification, the failed chain refuses here), the leaf
+		// identity maps from the san (the spki: form, the email, the cn
+		// fallback) and rides the same GetUser gate as the url
+		// username; the optional absence falls to the other backends.
+		// The mapped identity beats the url user the way the C canon
+		// does: the verdict runs ahead of the username extraction
+		if clientCert != nil {
+			peerCerts := qconn.ConnectionState().TLS.PeerCertificates
+			if len(peerCerts) > 0 {
+				if err := VerifyClientCertChain(peerCerts, clientCert.CAs); err != nil {
+					log.Warn().Msgf("the client certificate failed the verification: %s", err)
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				identity, ok := CertIdentity(peerCerts[0])
+				if !ok {
+					log.Warn().Msgf("the client certificate carries no identity")
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				certUser, err := unix_util.GetUser(identity)
+				if err != nil {
+					log.Warn().Msgf("the client certificate identity %q is not a system account: %s", identity, err)
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				log.Info().Msgf("the client certificate identity rides: %s", certUser.Username)
+				serveConversation(certUser.Username)
+				return
+			}
+			// the optional absence: the other backends ride
+		}
+
 		// the identity resolution runs BEFORE the HTTP stream is taken:
 		// w.(http3.HTTPStreamer).HTTPStream() flushes the response headers
 		// to the wire (the implicit 200), so every refusal that happens
@@ -112,25 +168,6 @@ func HandleAuths(ctx context.Context, enablePasswordLogin bool, defaultMaxPacket
 			return
 		}
 		base64ConvID := base64.StdEncoding.EncodeToString(convID[:])
-
-		// the takeover and the conversation creation run only on the
-		// positive verdict.  The conversation context must derive from
-		// the QUIC connection's: when the connection dies without an
-		// application-level close (client crash, network loss), the
-		// conversation handler blocked in AcceptChannel has to wake up
-		// and release the conversation's external resources
-		// (reverse-forwarding binds, forwarded agent sockets).  A
-		// conversation-create failure after the headers flushed is
-		// internal and leaves the stream to the teardown.
-		serveConversation := func(username string) {
-			str := w.(http3.HTTPStreamer).HTTPStream()
-			conv, err := ssh3.NewServerConversation(qconn.Context(), str, qconn, qconn, defaultMaxPacketSize, peerVersion)
-			if err != nil {
-				log.Error().Msgf("could not create new server conversation")
-				return
-			}
-			handlerFunc(username, conv, w, r)
-		}
 
 		// first, handle the HTTP request verifiers (often plugins)
 		for _, abstractVerifier := range identityVerifiers {

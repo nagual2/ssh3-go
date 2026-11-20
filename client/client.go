@@ -269,6 +269,13 @@ type dialOptions struct {
 	// list, the empty value keeps the field out (the compression
 	// off), a codec name pins the list to it
 	compressAnnounce *string
+
+	// clientCertAuth marks the dial as carrying a client certificate
+	// in the tls handshake (the mTLS phase 3): a dial with no other
+	// auth method is legitimate — the CONNECT rides without an
+	// authorization header and the server's cert verdict authenticates
+	// the mapped identity ahead of the http auth chain
+	clientCertAuth bool
 }
 
 // WithMultiplexed marks the conversation as shared by a control master:
@@ -291,6 +298,14 @@ func WithCompressAnnounce(announce string) DialOption {
 // open cross-implementation item).
 func WithNoEarly() DialOption {
 	return func(o *dialOptions) { o.noEarly = true }
+}
+
+// WithClientCertAuth marks the dial as carrying the client certificate
+// of the mTLS phase 3 in its tls handshake: with no other auth method
+// the CONNECT rides plain and the server's cert verdict authenticates
+// the mapped identity (the ssh3-c canon e3477ef — the cert-only dial)
+func WithClientCertAuth() DialOption {
+	return func(o *dialOptions) { o.clientCertAuth = true }
 }
 
 func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
@@ -531,14 +546,22 @@ func Dial(ctx context.Context, config *client_config.Config, qconn *quic.Conn,
 		}
 
 		if identity == nil {
-			return nil, NoSuitableIdentity{}
-		}
-
-		log.Debug().Msgf("try the following Identity: %s", identity)
-		err = identity.SetAuthorizationHeader(req, config.Username(), conv)
-		if err != nil {
-			log.Error().Msgf("could not set authorization header in HTTP request: %s", err)
-			return nil, err
+			if !dialOpts.clientCertAuth {
+				return nil, NoSuitableIdentity{}
+			}
+			// the client certificate rides the tls handshake (the
+			// phase 3): no identity rides the connect — the
+			// authorization header stays out and the server's cert
+			// verdict authenticates the mapped identity ahead of the
+			// http auth chain
+			log.Debug().Msgf("no http auth method rides: the client certificate carries the identity")
+		} else {
+			log.Debug().Msgf("try the following Identity: %s", identity)
+			err = identity.SetAuthorizationHeader(req, config.Username(), conv)
+			if err != nil {
+				log.Error().Msgf("could not set authorization header in HTTP request: %s", err)
+				return nil, err
+			}
 		}
 	}
 

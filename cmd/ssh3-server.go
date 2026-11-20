@@ -1029,6 +1029,13 @@ func ServerMain() int {
 	// -h for the host key, -c for the host certificate, -p for the port
 	certAlias := flag.String("c", "", "host certificate file (sshd -c; same as -cert)")
 	keyAlias := flag.String("h", "", "host key file (sshd -h; same as -key)")
+	// the client certificates (the phase 3, the ssh3-c canon e3477ef):
+	// the ca file names the trusted issuers of the client chains and
+	// arms the policy — the ca names ride the CertificateRequest, the
+	// auth chain runs the cert verdict first; the require policy
+	// without the ca file stops the daemon at the start
+	clientCertCAPath := flag.String("client-cert-ca", "", "the trusted issuers file of the client certificates (the mTLS): the ca anchors the client chains, the identity maps from the san (spki:/email/cn) of the verified leaf (the ssh3-c --client-cert-ca)")
+	clientCertPolicy := flag.String("client-cert", "none", "the client certificate policy: none (the default, no certificate request), optional (the presented chain verifies, the absence falls to the other backends), require (the handshake dies without one; wants -client-cert-ca)")
 	serverPort := flag.Int("p", 0, "port to listen on (sshd -p; overrides the -bind port, the bind address stays -bind)")
 	// the persistent session ticket key (R14-4, the ssh3-c wave-13 canon
 	// 26f23eb): the tickets issued in one daemon lifetime keep decrypting
@@ -1360,6 +1367,30 @@ func ServerMain() int {
 		tlsConfig.Certificates = append(tlsConfig.Certificates, certificate)
 	}
 
+	// the client certificates wiring (the phase 3, the ssh3-c canon
+	// e3477ef): the ca file arms the policy — the anchors load into the
+	// server tls config (after the certmagic replacement above, which
+	// would drop them), the require without the ca file stops the
+	// daemon at the start (the config error, not the runtime fall)
+	ccRequire, ccErr := server_auth.ParseClientCertPolicy(*clientCertPolicy)
+	if ccErr != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", ccErr)
+		return -1
+	}
+	var clientCertCfg *server_auth.ClientCertConfig
+	if *clientCertCAPath != "" {
+		caPool, ccErr := server_auth.LoadClientCertCA(*clientCertCAPath)
+		if ccErr != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", ccErr)
+			return -1
+		}
+		clientCertCfg = &server_auth.ClientCertConfig{CAs: caPool, Require: ccRequire}
+		server_auth.ArmClientCertTLS(tlsConfig, clientCertCfg)
+	} else if ccRequire {
+		fmt.Fprintln(os.Stderr, "ssh3-server: --client-cert require wants --client-cert-ca <file>")
+		return -1
+	}
+
 	// the persistent session ticket keys (R14-4, the ssh3-c wave-13 canon
 	// 26f23eb): the daemon arms the nginx-form key file — the missing file
 	// generates (0600), the broken one regenerates, the issued tickets
@@ -1653,7 +1684,7 @@ func ServerMain() int {
 		}
 	})
 	ssh3Handler := ssh3Server.GetHTTPHandlerFunc(context.Background())
-	handler, err := server_auth.HandleAuths(context.Background(), enablePasswordLogin, 30000, ssh3Handler)
+	handler, err := server_auth.HandleAuths(context.Background(), enablePasswordLogin, 30000, ssh3Handler, clientCertCfg)
 	if err != nil {
 		log.Error().Msgf("Could not get authentication handlers: %s", err)
 		return -1
