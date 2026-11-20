@@ -11,6 +11,18 @@
 # SSH3 over HTTP/3
 **English** | [Русский](README.ru.md) | [Deutsch](README.de.md)
 
+<div align="center">
+
+[![SSH3](https://img.shields.io/badge/SSH3-HTTP%2F3_over_QUIC-8A2BE2?style=flat-square)](https://github.com/francoismichel/ssh3)
+[![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
+[![Linux](https://img.shields.io/badge/Linux-deb%2Frpm%2Fapk-44CC11?style=flat-square&logo=linux&logoColor=white)](https://github.com/nagual2/ssh3-go/releases)
+[![Windows](https://img.shields.io/badge/Windows-client-007EC6?style=flat-square&logo=windows11&logoColor=white)](https://github.com/nagual2/ssh3-go/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/nagual2/ssh3-go/test.yml?branch=main&style=flat-square&label=CI)](https://github.com/nagual2/ssh3-go/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/tag/nagual2/ssh3-go?style=flat-square&label=release&color=007EC6)](https://github.com/nagual2/ssh3-go/releases)
+[![License](https://img.shields.io/badge/License-Apache--2.0-FE7D37?style=flat-square)](LICENSE)
+
+</div>
+
 SSH3 maps RFC 4254-style remote session semantics onto QUIC, TLS 1.3, and HTTP/3 Extended CONNECT. The project aims to preserve familiar SSH workflows while adding HTTP-native authentication and QUIC-native transport features such as datagram forwarding.
 
 This repository holds the Go implementation; the Rust rewrite lives in a separate project.
