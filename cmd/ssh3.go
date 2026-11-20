@@ -152,53 +152,61 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 	oidcConfig []*oidc.OIDCConfig, options *client_config.Config, proxyRemoteAddr *net.UDPAddr, tty *os.File, tuning quicTuning, addressFamily int, clientCert *tls.Certificate) (*quic.Conn, int) {
 
 	var err error
+	// the address list of the resolver walk (the C canon 6381b32): the
+	// destination may resolve to several addresses (the A and the AAAA
+	// records, the multi-line hosts files) and a dead one must not eat the
+	// whole setup deadline — the walk rides the destination dial, the jump
+	// hop keeps its single resolved address
+	var dialAddrs []*net.UDPAddr
 	remoteAddr := proxyRemoteAddr
 	if remoteAddr == nil {
-		remoteAddr, err = net.ResolveUDPAddr("udp", options.URLHostnamePort())
-		if err != nil {
-			log.Error().Msgf("could not resolve UDP address: %s", err)
+		dialAddrs, err = resolveDialAddrs(ctx, options.Hostname(), int(options.Port()), addressFamily)
+		if err == nil {
+			remoteAddr = dialAddrs[0]
+		}
+	} else {
+		// -4/-6 (ssh2 address family): a forced family must match the resolved
+		// peer address, otherwise the dial would fail with an opaque socket error
+		if addressFamily == 4 && remoteAddr.IP.To4() == nil {
+			log.Error().Msgf("-4: %s resolves to an IPv6 address", options.Hostname())
 			return nil, -1
 		}
-	}
-
-	// -4/-6 (ssh2 address family): a forced family must match the resolved
-	// peer address, otherwise the dial would fail with an opaque socket error
-	if addressFamily == 4 && remoteAddr.IP.To4() == nil {
-		log.Error().Msgf("-4: %s resolves to an IPv6 address", options.Hostname())
-		return nil, -1
-	}
-	if addressFamily == 6 && remoteAddr.IP.To4() != nil {
-		log.Error().Msgf("-6: %s resolves to an IPv4 address", options.Hostname())
-		return nil, -1
-	}
-
-	netString := "udp"
-	switch {
-	case addressFamily == 4:
-		netString = "udp4"
-	case addressFamily == 6:
-		netString = "udp6"
-	case runtime.GOOS == "darwin":
-		// on MacOS, the don't fragment (DF) bit is not set on dual-stack socket ("udp")
-		// This causes quic-go to not perform MTU discovery which can prevent the proxy jump from working at all.
-		// cf: - https://github.com/francoismichel/ssh3/issues/129
-		//     - https://github.com/quic-go/quic-go/issues/3793
-		//
-		// The fix here is to not use a dual-stack socket on MacOS and detect the IP version from the resolved peer address.
-
-		if remoteAddr.IP.To4() != nil {
-			// it is a v4 address
-			netString = "udp4"
-		} else {
-			// it is a v6 address
-			netString = "udp6"
+		if addressFamily == 6 && remoteAddr.IP.To4() != nil {
+			log.Error().Msgf("-6: %s resolves to an IPv4 address", options.Hostname())
+			return nil, -1
 		}
+		dialAddrs = []*net.UDPAddr{remoteAddr}
+	}
+	if err != nil {
+		log.Error().Msgf("could not resolve UDP address: %s", err)
+		return nil, -1
 	}
 
-	udpConn, err := net.ListenUDP(netString, nil)
-	if err != nil {
-		log.Error().Msgf("could not create UDP connection: %s", err)
-		return nil, -1
+	// listenUDPForDial creates the UDP socket of one dial attempt: the
+	// forced ssh2 family pins the socket family, on MacOS the don't
+	// fragment (DF) bit is not set on dual-stack socket ("udp") which
+	// causes quic-go to not perform MTU discovery and can prevent the
+	// proxy jump from working at all (cf.
+	// https://github.com/francoismichel/ssh3/issues/129,
+	// https://github.com/quic-go/quic-go/issues/3793) — the darwin socket
+	// detects the IP version from the address of the attempt
+	listenUDPForDial := func(addr *net.UDPAddr) (*net.UDPConn, error) {
+		netString := "udp"
+		switch {
+		case addressFamily == 4:
+			netString = "udp4"
+		case addressFamily == 6:
+			netString = "udp6"
+		case runtime.GOOS == "darwin":
+			if addr.IP.To4() != nil {
+				// it is a v4 address
+				netString = "udp4"
+			} else {
+				// it is a v6 address
+				netString = "udp6"
+			}
+		}
+		return net.ListenUDP(netString, nil)
 	}
 
 	tlsConf := &tls.Config{
@@ -413,18 +421,52 @@ func setupQUICConnection(ctx context.Context, skipHostVerification bool, keylog 
 		return qClient, 0
 	}
 
-	log.Debug().Msgf("dialing QUIC host at %s", remoteAddr)
-	qClient, err := quic.DialEarly(ctx,
-		udpConn,
-		remoteAddr,
-		tlsConf,
-		&qconf)
-	if err == nil {
+	// the walk dials the resolved addresses in the resolver order with the
+	// per-address connect cap (the C canon 6381b32): a blackholed address
+	// moves on inside its cap instead of eating the whole setup deadline,
+	// and a crypto error stops the walk — the server answered, the capture
+	// flow below rides the same address and the same socket
+	var udpConn *net.UDPConn
+	var qClient *quic.Conn
+	var captureConn *net.UDPConn
+	walkChosen, walkErr := walkResolvedAddrs(ctx, dialAddrs, func(attemptCtx context.Context, addr *net.UDPAddr) error {
+		conn, lerr := listenUDPForDial(addr)
+		if lerr != nil {
+			log.Error().Msgf("could not create UDP connection: %s", lerr)
+			return lerr
+		}
+		log.Debug().Msgf("dialing QUIC host at %s", addr)
+		qconn, derr := quic.DialEarly(attemptCtx, conn, addr, tlsConf, &qconf)
+		if derr == nil {
+			qClient = qconn
+			udpConn = conn
+			return nil
+		}
+		if walkStopsOnDialError(derr) {
+			// the capture/AIA/TOFU flow redials the same address on the
+			// same socket: the attempt socket stays open for it
+			captureConn = conn
+			return derr
+		}
+		conn.Close()
+		return derr
+	})
+	if qClient != nil {
+		remoteAddr = walkChosen
 		return finishConnection(qClient)
+	}
+	err = walkErr
+	if err == nil {
+		log.Error().Msgf("could not establish client QUIC connection: no address left to dial")
+		return nil, -1
 	}
 
 	if transportErr, ok := err.(*quic.TransportError); ok {
 		if transportErr.ErrorCode.IsCryptoError() {
+			// the crypto-stopped walk attempt left its socket for this flow:
+			// the capture and the retries ride the same address
+			udpConn = captureConn
+			remoteAddr = walkChosen
 			log.Debug().Msgf("received QUIC crypto error on first connection attempt: %s", err)
 			_, hostPinned := knownHosts[hostKey]
 
@@ -1697,9 +1739,23 @@ func ClientMain() int {
 		}
 	}
 
+	// the bare-IPv6 refusal of the C canon 35b2e64: the honest shape fix
+	// rides before the branches, the misleading resolve/parse error never
+	// reaches the user
+	if bare, _ := operandShape(urlFromParam); bare {
+		printBareIPv6Refusal()
+		return -1
+	}
+
 	parsedUrl, err := url.Parse(urlFromParam)
 	if err != nil {
 		log.Error().Msgf("could not parse URL: %s", err)
+		// the bad-port branches of the same canon carry the hint: a coloned
+		// authority that failed the parse (the junk port, the torn literal)
+		// names the bracketed form
+		if _, coloned := operandShape(urlFromParam); coloned {
+			fmt.Fprintln(os.Stderr, ipv6LiteralHintLine)
+		}
 		return -1
 	}
 

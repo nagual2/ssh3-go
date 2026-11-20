@@ -211,7 +211,15 @@ func (m *agentSigningMethod) Sign(signingString string, key interface{}) ([]byte
 	if !ok {
 		return nil, fmt.Errorf("bad key type: %T instead of ssh.PublicKey", pk)
 	}
-	signature, err := m.Agent.SignWithFlags(pk, []byte(signingString), agent.SignatureFlagRsaSha256)
+	// the algo rides the head of the key blob: the ssh-rsa keys sign the
+	// sha-256 variant (the SSH_AGENT_RSA_SHA2_256 flag, never the sha-1
+	// default), the rest take the default — the C canon
+	// s3_ssh3_agent_client.c
+	var flags agent.SignatureFlags
+	if m.Key.Type() == "ssh-rsa" {
+		flags = agent.SignatureFlagRsaSha256
+	}
+	signature, err := m.Agent.SignWithFlags(pk, []byte(signingString), flags)
 	if err != nil {
 		return nil, err
 	}
