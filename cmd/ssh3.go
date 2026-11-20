@@ -37,6 +37,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/term"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -946,6 +947,9 @@ func ClientMain() int {
 	forwardUDP := flag.String("forward-udp", "", "if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport (deprecated alias of -L udp://)")
 	forwardTCP := flag.String("forward-tcp", "", "if set, take a localport/remoteip@remoteport forwarding localhost@localport towards remoteip@remoteport (deprecated alias of -L)")
 	noSession := flag.Bool("N", false, "do not execute a remote command or session; hold the connection open for the forwards (use with -L/-D/-R)")
+	noStdin := flag.Bool("n", false, "silent automatic reconnect (the ssh3-c -n): the session re-dials without banners on a connection loss, "+
+		"the retry budget of 10 x 30 s covers the server parking window (SSH3_CLI_RECONNECT_INTERVAL overrides the interval); "+
+		"NOTE: deviates from the ssh(1) stdin-null meaning, mirrored from the ssh3-c client")
 	configFileFlag := flag.String("F", "", "specifies an alternative per-user configuration file (default ~/.ssh/config)")
 	forcePTY := flag.Bool("t", false, "force pseudo-terminal allocation, even when the local standard input is not a terminal")
 	noPTY := flag.Bool("T", false, "disable pseudo-terminal allocation, even for an interactive session (RequestTTY=no)")
@@ -1084,6 +1088,7 @@ func ClientMain() int {
 	requestTTYOption := "" // the -o RequestTTY=... value, empty when unset
 	termTypeOption := ""   // the -o Term=... value, empty when unset
 	escapeCharOption := "" // the -o EscapeChar=... value, empty when unset
+	reconnectOption := ""  // the -o Reconnect=... value, empty when unset (SPEC §17.4)
 	portOption := uint16(0)
 	userOption := ""
 	proxyJumpOption := ""
@@ -1196,6 +1201,16 @@ func ClientMain() int {
 				return -1
 			}
 			controlPersistOption = strings.TrimSpace(value)
+			continue
+		case strings.EqualFold(key, "Reconnect"):
+			// the reconnect enable placeholder (SPEC §17.4): "hold" arms the
+			// interactive hold, "off" refuses it; the final key comes with the
+			// owner's decision, the parse validates up front like the others
+			if _, _, err := parseReconnectKeyword(strings.ToLower(strings.TrimSpace(value))); err != nil {
+				log.Error().Msgf("%s", err)
+				return -1
+			}
+			reconnectOption = strings.ToLower(strings.TrimSpace(value))
 			continue
 		case strings.EqualFold(key, "ConnectTimeout"):
 			seconds, err := parseConnectTimeoutKeyword(value)
@@ -2090,112 +2105,10 @@ func ClientMain() int {
 		destinationTuning.InitialPacketSize = destinationPacketSize
 	}
 
-	qconn, status := setupQUICConnection(setupCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, destinationTuning, addressFamily)
-
-	if qconn == nil {
-		if status != 0 {
-			if !reportSetupTimeout(setupCtx, connectTimeout) {
-				log.Error().Msgf("could not setup transport for client")
-			}
-		}
-		return status
-	}
-
-	// no EnableDatagrams: ssh3 carries UDP forwarding over the raw QUIC datagram
-	// API, and the HTTP/3 datagram layer would compete with it for datagrams on
-	// the same connection
-	transport := &http3.Transport{}
-
-	c, err := client.Dial(setupCtx, options, qconn, transport, agentClient, client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly())
-	if err != nil {
-		if !reportSetupTimeout(setupCtx, connectTimeout) {
-			log.Error().Msgf("could not dial %s: %s", options.CanonicalHostFormat(), err)
-		}
-		return -1
-	}
-	// the deadline only serves the connection setup: quic-go detaches the
-	// connection from the dial context once it is returned, so releasing the
-	// timer here leaves the established session untouched
-	cancelSetup()
-	if len(reverseForwardsFlag) > 0 {
-		if err := c.SetReverseForwards(reverseForwardsFlag); err != nil {
-			log.Error().Msgf("could not set up reverse forwarding: %s", err)
-			return -1
-		}
-		for _, forward := range reverseForwardsFlag {
-			if err := c.RequestReverseForward(forward); err != nil {
-				log.Error().Msgf("reverse forwarding request for -R %s failed: %s", forward.SpecString(), err)
-				return -1
-			}
-		}
-	}
-	// -L/-D: the local listeners ride the connection just established. They
-	// only need the SSH3 conversation, so they are set up before any session
-	// channel and stay usable for the whole lifetime of the invocation.
-	for _, forward := range localForwardsFlag {
-		switch forward.Protocol {
-		case util.SSHForwardingProtocolTCP:
-			remoteTCPAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(forward.TargetHost, strconv.Itoa(int(forward.TargetPort))))
-			if err != nil {
-				log.Error().Msgf("could not resolve -L target %s:%d: %s", forward.TargetHost, forward.TargetPort, err)
-				return -1
-			}
-			localTCPAddr, err := localListenTCPAddr(forward, remoteTCPAddr.IP)
-			if err != nil {
-				log.Error().Msgf("%s", err)
-				return -1
-			}
-			if _, err := c.ForwardTCP(ctx, localTCPAddr, remoteTCPAddr); err != nil {
-				log.Error().Msgf("could not set up local TCP forwarding: %s", err)
-				return -1
-			}
-			log.Debug().Msgf("local TCP forwarding from %s to %s", localTCPAddr, remoteTCPAddr)
-		case util.SSHProtocolUDP:
-			remoteUDPAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(forward.TargetHost, strconv.Itoa(int(forward.TargetPort))))
-			if err != nil {
-				log.Error().Msgf("could not resolve -L UDP target %s:%d: %s", forward.TargetHost, forward.TargetPort, err)
-				return -1
-			}
-			localUDPAddr, err := localListenUDPAddr(forward, remoteUDPAddr.IP)
-			if err != nil {
-				log.Error().Msgf("%s", err)
-				return -1
-			}
-			if _, err := c.ForwardUDP(ctx, localUDPAddr, remoteUDPAddr); err != nil {
-				log.Error().Msgf("could not set up local UDP forwarding: %s", err)
-				return -1
-			}
-			log.Debug().Msgf("local UDP forwarding from %s to %s", localUDPAddr, remoteUDPAddr)
-		}
-	}
-
-	// -D: open one local SOCKS5 listener per specification.
-	var dynamicForwarders []*dynamicForwarder
-	for _, spec := range dynamicForwardsFlag {
-		forwarder, err := startDynamicForward(ctx, c.Conversation, spec)
-		if err != nil {
-			log.Error().Msgf("could not set up dynamic forwarding: %s", err)
-			return -1
-		}
-		dynamicForwarders = append(dynamicForwarders, forwarder)
-		defer func() {
-			forwarder.Close()
-			forwarder.Wait()
-		}()
-		if spec.BindPort == 0 {
-			log.Info().Msgf("dynamic SOCKS proxy listening on %s (allocated port)", forwarder.ListenAddr())
-		} else {
-			log.Info().Msgf("dynamic SOCKS proxy listening on %s", forwarder.ListenAddr())
-		}
-	}
-
-	if *transferMode || *sftpMode {
-		return runFileTransfer(c, fileTransferTarget, fileTransferLocal, fileTransferUpload, *recursive, *resumeMode, *verifyChecksum)
-	}
-
 	// RequestTTY resolution (OpenSSH precedence): the -T/-t flags are the
 	// CLI absolutes, the -o option overrides the ~/.ssh/config keyword, auto
-	// is the default
+	// is the default. Resolved before the reconnect loop: the shape gates
+	// need the pty decision, and the re-dials ride the same policy.
 	requestTYTPolicy := "auto"
 	if requestTTYConfig != "" {
 		requestTYTPolicy = requestTTYConfig
@@ -2233,86 +2146,306 @@ func ClientMain() int {
 		log.Error().Msgf("%s", err)
 		return -1
 	}
-	var escapeCfg *client.EscapeConfig
-	if escapeChar != 0 {
-		escapeCfg = &client.EscapeConfig{
-			Char: escapeChar,
-			Disconnect: func() error {
-				log.Info().Msgf("connection closed by the %q escape sequence", string(escapeChar))
-				c.Close()
-				return nil
-			},
-		}
+
+	// the deadline-capable console (the reconnect reclaim, SPEC §17.4): a tty
+	// fd is not pollable as-is, so the console rides a non-blocking dup on the
+	// unix builds — the poller serves the reads with the blocking semantics and
+	// the read deadlines work, so the dispatch of a dead session reclaims the
+	// console from its stale stdin pump deterministically (windows keeps the
+	// plain stdin: the conpty deadlines are refused anyway)
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		makeDeadlineCapableStdin()
 	}
 
-	// -s requests a subsystem instead of a shell or a command: it owns the
-	// session channel, so it is dispatched before the shell/exec path and is
-	// mutually exclusive with it.
-	if subsystemName != "" {
+	// the reconnect policy and the run shape (SPEC §17.4): -n arms the silent
+	// flavor, the placeholder arms the interactive hold, the default stays
+	// off so every shape keeps its pre-reconnect contract
+	reconnectPolicy := newReconnectPolicy(*noStdin, reconnectOption, os.Getenv(reconnectModeEnv), os.Getenv(reconnectIntervalEnv))
+	console := term.IsTerminal(int(os.Stdin.Fd()))
+	ptyWanted := false
+	switch requestTYTPolicy {
+	case "no":
+		ptyWanted = false
+	case "yes", "force":
+		ptyWanted = true
+	default: // auto: a pty for an interactive shell over a terminal
+		ptyWanted = len(command) == 0 && console
+	}
+	shape := reconnectShape{
+		console:        console,
+		ptyWanted:      ptyWanted,
+		noCommand:      len(command) == 0,
+		sftpOrTransfer: *sftpMode || *transferMode,
+		subsystem:      subsystemName != "",
+		hasForwards:    len(localForwardsFlag) > 0 || len(dynamicForwardsFlag) > 0 || len(reverseForwardsFlag) > 0,
+		noSession:      *noSession,
+		controlMaster:  controlMasterResolved != "no",
+		jump:           proxyJumpResolved != "",
+		noStdin:        *noStdin,
+	}
+
+	// the reconnect loop (SPEC §17.4): for the gated shapes the death of the
+	// session re-dials the same peer in the same process — the session token
+	// (client/session_token.go) rides every dial, so the server re-attaches
+	// the parked session instead of respawning. The single-run shapes return
+	// from their branches on the first pass and never loop.
+	reconnectAttempts := 0
+	for {
+		// each attempt rides its own setup deadline (the C dispatch re-arms
+		// the setup window per outer pass)
+		dialCtx := ctx
+		cancelDial := func() {}
+		if connectTimeout > 0 {
+			dialCtx, cancelDial = context.WithTimeout(ctx, time.Duration(connectTimeout)*time.Second)
+		}
+
+		qconn, status := setupQUICConnection(dialCtx, *insecure, keyLog, ssh3Dir, pool, knownHostsPath, knownHosts, strictHostKeyChecking, verifyHostKeyDNS, oidcConfig, options, proxyAddress, tty, destinationTuning, addressFamily)
+
+		if qconn == nil {
+			cancelDial()
+			timedOut := connectTimeout > 0 && dialCtx.Err() == context.DeadlineExceeded
+			// the silent dial failure of the -n (SPEC §17.4): the outage of
+			// the peer rides the same budget as the session-death dispatch —
+			// the C gone-conn path counts the continuous outage from the
+			// first bring-up failure, the retries stay quiet and the
+			// exhaustion is the single error line
+			if reconnectPolicy.Mode == ReconnectSilent && shape.silentAllowed() {
+				reconnectAttempts++
+				if reconnectPolicy.Exceeded(reconnectAttempts) {
+					fmt.Fprintf(os.Stderr, "%s\n", reconnectBudgetExhaustedLine)
+					return exitReconnectError
+				}
+				time.Sleep(reconnectPolicy.Interval)
+				continue
+			}
+			if status != 0 {
+				if !reportSetupTimeout(dialCtx, connectTimeout) {
+					log.Error().Msgf("could not setup transport for client")
+				}
+			}
+			// the pre-dial hold (the C wave 16): the dial failure and the
+			// setup timeout hold the console of the interactive shape
+			if reconnectPolicy.Mode == ReconnectHold && shape.holdPredial() {
+				line1 := "ssh3 - the connection could not be established"
+				if timedOut {
+					line1 = "ssh3 - the connection could not be established (timeout)"
+				}
+				verdict, code := runReconnectHold(reconnectPolicy, line1)
+				if verdict == reconnectRetry {
+					continue
+				}
+				return code
+			}
+			return status
+		}
+
+		// no EnableDatagrams: ssh3 carries UDP forwarding over the raw QUIC datagram
+		// API, and the HTTP/3 datagram layer would compete with it for datagrams on
+		// the same connection
+		transport := &http3.Transport{}
+
+		c, err := client.Dial(dialCtx, options, qconn, transport, agentClient, client.WithCompressAnnounce(compressAnnounce), client.WithNoEarly())
+		if err != nil {
+			if !reportSetupTimeout(dialCtx, connectTimeout) {
+				log.Error().Msgf("could not dial %s: %s", options.CanonicalHostFormat(), err)
+			}
+			cancelDial()
+			return -1
+		}
+		// the deadline only serves the connection setup: quic-go detaches the
+		// connection from the dial context once it is returned, so releasing the
+		// timer here leaves the established session untouched
+		cancelDial()
+
+		var escapeCfg *client.EscapeConfig
+		if escapeChar != 0 {
+			// the escape config closes the connection of this ride: rebuilt
+			// per attempt so the re-dial tears down its own client
+			escapeCfg = &client.EscapeConfig{
+				Char: escapeChar,
+				Disconnect: func() error {
+					log.Info().Msgf("connection closed by the %q escape sequence", string(escapeChar))
+					c.Close()
+					return nil
+				},
+			}
+		}
+
+		if len(reverseForwardsFlag) > 0 {
+			if err := c.SetReverseForwards(reverseForwardsFlag); err != nil {
+				log.Error().Msgf("could not set up reverse forwarding: %s", err)
+				return -1
+			}
+			for _, forward := range reverseForwardsFlag {
+				if err := c.RequestReverseForward(forward); err != nil {
+					log.Error().Msgf("reverse forwarding request for -R %s failed: %s", forward.SpecString(), err)
+					return -1
+				}
+			}
+		}
+		// -L/-D: the local listeners ride the connection just established. They
+		// only need the SSH3 conversation, so they are set up before any session
+		// channel and stay usable for the whole lifetime of the invocation.
+		for _, forward := range localForwardsFlag {
+			switch forward.Protocol {
+			case util.SSHForwardingProtocolTCP:
+				remoteTCPAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(forward.TargetHost, strconv.Itoa(int(forward.TargetPort))))
+				if err != nil {
+					log.Error().Msgf("could not resolve -L target %s:%d: %s", forward.TargetHost, forward.TargetPort, err)
+					return -1
+				}
+				localTCPAddr, err := localListenTCPAddr(forward, remoteTCPAddr.IP)
+				if err != nil {
+					log.Error().Msgf("%s", err)
+					return -1
+				}
+				if _, err := c.ForwardTCP(ctx, localTCPAddr, remoteTCPAddr); err != nil {
+					log.Error().Msgf("could not set up local TCP forwarding: %s", err)
+					return -1
+				}
+				log.Debug().Msgf("local TCP forwarding from %s to %s", localTCPAddr, remoteTCPAddr)
+			case util.SSHProtocolUDP:
+				remoteUDPAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(forward.TargetHost, strconv.Itoa(int(forward.TargetPort))))
+				if err != nil {
+					log.Error().Msgf("could not resolve -L UDP target %s:%d: %s", forward.TargetHost, forward.TargetPort, err)
+					return -1
+				}
+				localUDPAddr, err := localListenUDPAddr(forward, remoteUDPAddr.IP)
+				if err != nil {
+					log.Error().Msgf("%s", err)
+					return -1
+				}
+				if _, err := c.ForwardUDP(ctx, localUDPAddr, remoteUDPAddr); err != nil {
+					log.Error().Msgf("could not set up local UDP forwarding: %s", err)
+					return -1
+				}
+				log.Debug().Msgf("local UDP forwarding from %s to %s", localUDPAddr, remoteUDPAddr)
+			}
+		}
+
+		// -D: open one local SOCKS5 listener per specification.
+		var dynamicForwarders []*dynamicForwarder
+		for _, spec := range dynamicForwardsFlag {
+			forwarder, err := startDynamicForward(ctx, c.Conversation, spec)
+			if err != nil {
+				log.Error().Msgf("could not set up dynamic forwarding: %s", err)
+				return -1
+			}
+			dynamicForwarders = append(dynamicForwarders, forwarder)
+			defer func() {
+				forwarder.Close()
+				forwarder.Wait()
+			}()
+			if spec.BindPort == 0 {
+				log.Info().Msgf("dynamic SOCKS proxy listening on %s (allocated port)", forwarder.ListenAddr())
+			} else {
+				log.Info().Msgf("dynamic SOCKS proxy listening on %s", forwarder.ListenAddr())
+			}
+		}
+
+		if *transferMode || *sftpMode {
+			return runFileTransfer(c, fileTransferTarget, fileTransferLocal, fileTransferUpload, *recursive, *resumeMode, *verifyChecksum)
+		}
+
+		// -s requests a subsystem instead of a shell or a command: it owns the
+		// session channel, so it is dispatched before the shell/exec path and is
+		// mutually exclusive with it.
+		if subsystemName != "" {
+			if *noSession {
+				fmt.Fprintln(os.Stderr, "-s cannot be combined with -N")
+				return -1
+			}
+			if subsystemName == sftpSubsystemName {
+				return runSFTPSubsystem(c.Conversation)
+			}
+			if err := runSubsystemSession(ctx, c, tty, subsystemName, requestTYTPolicy == "force", termType); err != nil {
+				log.Error().Msgf("an error was encountered when running the %s subsystem: %s", subsystemName, err)
+				return -1
+			}
+			return 0
+		}
+
 		if *noSession {
-			fmt.Fprintln(os.Stderr, "-s cannot be combined with -N")
-			return -1
+			log.Info().Msgf("-N: holding the connection open for the forwards until interrupted")
+			if len(reverseForwardsFlag) > 0 || len(localForwardsFlag) > 0 || len(dynamicForwarders) > 0 {
+				// no session channel to start the dispatch loop implicitly
+				c.StartAcceptLoop()
+			}
+			sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			<-sigCtx.Done()
+			log.Debug().Msgf("interrupted: closing the connection")
+			c.Close()
+			return 0
 		}
-		if subsystemName == sftpSubsystemName {
-			return runSFTPSubsystem(c.Conversation)
-		}
-		if err := runSubsystemSession(ctx, c, tty, subsystemName, requestTYTPolicy == "force", termType); err != nil {
-			log.Error().Msgf("an error was encountered when running the %s subsystem: %s", subsystemName, err)
-			return -1
-		}
-		return 0
-	}
 
-	if *noSession {
-		log.Info().Msgf("-N: holding the connection open for the forwards until interrupted")
-		if len(reverseForwardsFlag) > 0 || len(localForwardsFlag) > 0 || len(dynamicForwarders) > 0 {
-			// no session channel to start the dispatch loop implicitly
-			c.StartAcceptLoop()
-		}
-		sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		<-sigCtx.Done()
-		log.Debug().Msgf("interrupted: closing the connection")
-		c.Close()
-		return 0
-	}
+		// the ride started: its lifetime decides whether a later death
+		// restarts the retry budget (a ride that lived resets it, a bring-up
+		// that died at once keeps the counter — the loop-safe form of the C
+		// channel-confirmation reset)
+		sessionStart := time.Now()
 
-	// -t forces a PTY even when the local input is not a terminal, which the
-	// regular session path cannot do: RunSession only allocates one when it
-	// finds a TTY.
-	if *forcePTY || requestTYTPolicy == "force" {
-		err = runForcedPtySession(ctx, c, tty, forwardAgentVar, escapeCfg, termType, command...)
-		if errors.Is(err, client.ErrEscapeDisconnect) {
+		// -t forces a PTY even when the local input is not a terminal, which the
+		// regular session path cannot do: RunSession only allocates one when it
+		// finds a TTY.
+		var sessionErr error
+		if *forcePTY || requestTYTPolicy == "force" {
+			sessionErr = runForcedPtySession(ctx, c, tty, forwardAgentVar, escapeCfg, termType, command...)
+		} else {
+			sessionErr = c.RunSession(tty, forwardAgentVar, requestTYTPolicy, termType, escapeCfg, command...)
+		}
+
+		// the terminal events of the session end the run: the reconnect never
+		// fires on a verdict
+		if errors.Is(sessionErr, client.ErrEscapeDisconnect) {
+			// the user tore the session down with the ~. escape sequence:
+			// the exit code matches a closed connection, as OpenSSH
 			return 255
 		}
-		switch sessionError := err.(type) {
+		switch sessionError := sessionErr.(type) {
+		case nil:
+			return 0
 		case client.ExitStatus:
 			log.Info().Msgf("the process exited with status %d", sessionError.StatusCode)
 			return sessionError.StatusCode
 		case client.ExitSignal:
 			log.Error().Msgf("the process exited with signal %s: %s", sessionError.Signal, sessionError.ErrorMessageUTF8)
 			return exitCodeForExitSignal(sessionError.Signal)
-		default:
-			log.Error().Msgf("an error was encountered when running the session: %s", sessionError)
-			return -1
 		}
-	}
 
-	err = c.RunSession(tty, forwardAgentVar, requestTYTPolicy, termType, escapeCfg, command...)
-	if errors.Is(err, client.ErrEscapeDisconnect) {
-		// the user tore the session down with the ~. escape sequence:
-		// the exit code matches a closed connection, as OpenSSH
-		return 255
-	}
-	switch sessionError := err.(type) {
-	case client.ExitStatus:
-		log.Info().Msgf("the process exited with status %d", sessionError.StatusCode)
-		return sessionError.StatusCode
-	case client.ExitSignal:
-		log.Error().Msgf("the process exited with signal %s: %s", sessionError.Signal, sessionError.ErrorMessageUTF8)
-		return exitCodeForExitSignal(sessionError.Signal)
-	default:
-		log.Error().Msgf("an error was encountered when running the session: %s", sessionError)
+		// the transport death of the session: the reconnect dispatch (SPEC
+		// §17.4). The dead client tears down before the re-dial — the
+		// finalize of a dead conn must not linger (the C lesson: the
+		// grave-wagon rides the PTO probes for minutes)
+		c.Close()
+
+		// the stale stdin pump of the dead session holds a blocking console
+		// read: reclaim the console for the hold window or the next ride
+		unblockStaleStdinPump()
+
+		if time.Since(sessionStart) >= reconnectPolicy.Interval {
+			reconnectAttempts = 0
+		}
+		reconnectAttempts++
+
+		if reconnectPolicy.Mode == ReconnectSilent && shape.silentAllowed() {
+			if reconnectPolicy.Exceeded(reconnectAttempts) {
+				fmt.Fprintf(os.Stderr, "%s\n", reconnectBudgetExhaustedLine)
+				return exitReconnectError
+			}
+			time.Sleep(reconnectPolicy.Interval)
+			continue
+		}
+		if reconnectPolicy.Mode == ReconnectHold && shape.holdAllowed() {
+			verdict, code := runReconnectHold(reconnectPolicy, "ssh3 - the connection is lost: all sessions inactive")
+			if verdict == reconnectRetry {
+				continue
+			}
+			return code
+		}
+
+		// the single-run verdict: the historical behavior of a dead session
+		fmt.Fprintf(os.Stderr, "Could not get message: %+v\n", sessionErr)
 		return -1
 	}
 }

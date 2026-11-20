@@ -746,8 +746,7 @@ func (c *Client) RunSession(tty *os.File, forwardSSHAgent bool, requestTTY strin
 	channel, ptyRequested, err := c.OpenSession(ctx, spec)
 	if err != nil {
 		if channel == nil {
-			fmt.Fprintf(os.Stderr, "Could not open channel: %+v", err)
-			os.Exit(-1)
+			return fmt.Errorf("could not open channel: %w", err)
 		}
 		return err
 	}
@@ -801,7 +800,8 @@ func (c *Client) RunSession(tty *os.File, forwardSSHAgent bool, requestTTY strin
 	case ExitStatus, ExitSignal:
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Could not get message: %+v\n", err)
-	os.Exit(-1)
-	return nil
+	// the transport death of the session: the error returns to the caller so
+	// the reconnect dispatch (SPEC §17.4) can hold the console or re-dial
+	// with the same session token; the caller owns the failure verdict
+	return err
 }

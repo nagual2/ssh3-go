@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -76,6 +77,11 @@ func pumpSessionStreams(channel sessionChannel, sio sessionIO, ptyRequested bool
 	// arrives while the pump is still running waits for it before deciding
 	// whether the transfer was truncated
 	pumpDone := make(chan struct{})
+	// set when the stdin pump tore the session down with the escape
+	// sequence: the drain loop then surfaces the sentinel instead of the
+	// raw transport error of the closed connection, so the caller keeps the
+	// ~. verdict distinct from a connection loss
+	var escaped atomic.Bool
 
 	// the interactive escape filter (OpenSSH-style ~. / ~^Z / ~~): one
 	// instance for the whole pump so a sequence split across reads still
@@ -98,6 +104,7 @@ func pumpSessionStreams(channel sessionChannel, sio sessionIO, ptyRequested bool
 					payload, action = filter.Feed(buf[:n])
 
 					if action == "disconnect" {
+						escaped.Store(true)
 						if len(payload) > 0 {
 							if _, err2 := channel.WriteData(payload, ssh3Messages.SSH_EXTENDED_DATA_NONE); err2 != nil {
 								writeFailed.Store(true)
@@ -137,6 +144,13 @@ func pumpSessionStreams(channel sessionChannel, sio sessionIO, ptyRequested bool
 					channel.Close()
 					return
 				}
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					// the deliberate unblock of a stale pump (the reconnect
+					// dispatch reclaims the console from a dead session's
+					// pump with a past read deadline): quiet return, the
+					// error noise would land in the hold window
+					return
+				}
 				fmt.Fprintf(sio.stderr, "could not read data from stdin: %+v", err)
 				return
 			}
@@ -146,6 +160,12 @@ func pumpSessionStreams(channel sessionChannel, sio sessionIO, ptyRequested bool
 	for {
 		genericMessage, err := channel.NextMessage()
 		if err != nil {
+			if escaped.Load() {
+				// the stdin pump tore the session down with the escape
+				// sequence: the transport error of the closed connection
+				// rides the ~. verdict instead
+				return ErrEscapeDisconnect
+			}
 			return err
 		}
 		switch message := genericMessage.(type) {
